@@ -47,6 +47,7 @@ _BUSY_NOTICE_LIMIT = 4096
 _BUSY_NOTICE_COOLDOWN = 5.0
 _SUMMARY_COOLDOWN_LIMIT = 4096
 _SUMMARY_COOLDOWN_TTL = 86_400.0
+_PUBLIC_RELATIONSHIP_RATE_SCALE = 0.5
 _RELAY_USER_MENTION = re.compile(r"@!?(\d{15,22})(?!\d)")
 _RELAY_USER_MENTION_LIMIT = 3
 _PRIVATE_MEMORY_REQUESTS = (
@@ -1627,6 +1628,15 @@ class MoboBot(commands.Bot):
                     learning_rate=float(config["relationship_learning_rate"]),
                     decay_days=int(config["relationship_decay_days"]),
                 )
+        elif config["relationship_enabled"]:
+            await self.state.relationships.observe(
+                payload.guild_id,
+                payload.user_id,
+                payload.text,
+                learning_rate=float(config["relationship_learning_rate"]) * _PUBLIC_RELATIONSHIP_RATE_SCALE,
+                decay_days=int(config["relationship_decay_days"]),
+                familiarity_only=True,
+            )
         if config["mood_enabled"]:
             await self.state.mood.observe(payload.text, config)
         _interest, topics = await self.state.preferences.interest_for(payload.text)

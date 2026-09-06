@@ -332,10 +332,3 @@ class ProactiveService:
             or 0
         )
         return used_tokens >= soft_budget
-
-    async def record(self, guild_id: str, channel_id: str, reason: str) -> None:
-        await self.database.execute(
-            """INSERT INTO proactive_log(guild_id, channel_id, reason, created_at)
-               VALUES(?, ?, ?, ?)""",
-            (guild_id, channel_id, reason, iso_now()),
-        )
