@@ -251,3 +251,24 @@ A1 措辞改为行为倾向、禁用情感断言词；A3 聚合/生效/学习三
   照常递增；A3：gate 强回不经概率写入语义、learn-skip 下沉 SQL；A4：负值行单独查询
   （`list(5)` 的 `weight DESC` 会挤出负行）+ >5 正值行测试；A5：mood 关闭回基线、
   置于 privacy 之后、倾向性措辞；A1：公私两域措辞测试。
+
+## 附: 执行期修订记录（v3 → 交付态，2026-09-05 深度工作执行）
+
+Phase A（commit 0e5f68b）与 Phase B（commit fcb65d5）交付，最终 347 tests 全绿。
+执行中经评审（sec-reviewer / reviewer-1 / oracle 共五轮）确认的计划修订：
+
+- **B4 open_loops 移出心流上下文**（sec 阻塞）：`open_loops` 表无来源频道列，溯源不可建立；
+  `public_safe=True` 对全 guild 授权，受限频道话题会经心流泄漏到公开频道。修复 = 整体移除，
+  待将来加溯源列再启用。
+- **B5 心流产出不持久化到 messages 表**（sec 阻塞）：多人派生文本以 `user_id=None` 落库
+  会让 `/忘记我` 清不掉参与者信息（与动态总结"不持久化多人派生内容"同一 rationale）。
+  防重复改用同频道最近 5 条 `flow:` 记录注入（不可信标注）。附带动 `purge_user` 扩展：
+  连带删除该用户所在服务器的 flow 行与无归属（`user_id=''`）安全事件。
+- **B4 机械化收口**：`_FLOW_MAX_TOKENS`（≤300）真实接线到 utility 调用；`text` >80 字
+  机械丢弃（原为纯提示词约束）；闲置判定为严格大于 20 分钟。
+- **B2/B4 单快照**：资格判定与生成上下文共用一次有界快照（60 条尾部），资格只数
+  `role='user'`，上下文含全部角色——bot 自己的回复因此能进入下一轮上下文。
+- **B5 发送路径统一**：`_send_public_reply` 的后续碎片委托给抽取的 `_send_fragments`
+  helper（首片仍 `source.reply` + first_mentions，外部行为不变）。
+- **杂项**：`@flow.error` 签名按已装 discord.py 契约修正为 `(self, exc)`；
+  Phase A 顺带修复 4 个既有时钟敏感测试（安静时段在测试配置内置 `00:00`/`00:00` 禁用）。
