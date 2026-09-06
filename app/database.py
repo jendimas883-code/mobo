@@ -622,6 +622,14 @@ class Database:
         async with self.connect() as connection:
             await connection.execute("BEGIN IMMEDIATE")
             try:
+                # Derive affected guilds from the user's messages before
+                # deleting them — needed to scope flow-side-channel cleanup.
+                cursor = await connection.execute(
+                    "SELECT DISTINCT guild_id FROM messages WHERE user_id = ?",
+                    (user_id,),
+                )
+                affected_guilds = [row["guild_id"] for row in await cursor.fetchall()]
+
                 await connection.execute(
                     "DELETE FROM messages WHERE user_id = ?",
                     (user_id,),
@@ -659,6 +667,20 @@ class Database:
                        WHERE actor = ? OR target = ? OR details_json LIKE ?""",
                     (f"discord:{user_id}", user_id, f"%{user_id}%"),
                 )
+                # Flow side-channels: proactive_log flow rows carry
+                # multi-user-derived hook text with no per-user attribution;
+                # conservative whole-guild flow-row deletion is privacy-correct.
+                # safety_events from the flow path are written with user_id=""
+                # (no single actor), so purge the unattributable rows per guild.
+                for gid in affected_guilds:
+                    await connection.execute(
+                        "DELETE FROM proactive_log WHERE guild_id = ? AND reason LIKE 'flow:%'",
+                        (gid,),
+                    )
+                    await connection.execute(
+                        "DELETE FROM safety_events WHERE guild_id = ? AND (user_id IS NULL OR user_id = '')",
+                        (gid,),
+                    )
                 await connection.commit()
             except Exception:
                 await connection.rollback()

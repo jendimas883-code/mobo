@@ -823,6 +823,26 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
         "👍,😂,❤️,🤔",
         "逗号分隔的表情列表，随机选取一个。",
     ),
+    # ── Phase B：心流 ───────────────────────────────────────────────────
+    SettingField(
+        "flow_enabled",
+        "开启冷场心流",
+        "主动发言/回复决策",
+        "toggle",
+        False,
+        "频道冷场时低频抛出话题；前提：原始消息保存（save_raw_messages）已开启。",
+    ),
+    SettingField(
+        "flow_probability",
+        "心流触发概率",
+        "主动发言/回复决策",
+        "number",
+        0.15,
+        "满足所有条件后实际触发的随机概率。",
+        0.0,
+        1.0,
+        0.05,
+    ),
     # ── Phase 3：工具桥 ─────────────────────────────────────────────────
     SettingField(
         "tools_enabled_global",
