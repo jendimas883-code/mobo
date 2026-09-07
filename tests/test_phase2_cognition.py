@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -388,7 +389,6 @@ class TestReactions:
                 "reaction_min_score": 40,
                 "gate_threshold": 80,
                 "reaction_emoji_set": "👍,😂",
-                # start==end 表示永不安静，让测试不受运行时刻影响
                 "proactive_quiet_start": "00:00",
                 "proactive_quiet_end": "00:00",
             },
@@ -447,7 +447,6 @@ class TestReactions:
                 "reaction_probability": 1.0,
                 "reaction_min_score": 40,
                 "gate_threshold": 80,
-                # start==end 表示永不安静，让测试不受运行时刻影响
                 "proactive_quiet_start": "00:00",
                 "proactive_quiet_end": "00:00",
             },
@@ -639,19 +638,20 @@ class TestGateIntegration:
             {
                 "proactive_global_enabled": True,
                 "gate_threshold": 80,
-                # start==end 表示永不安静，让测试不受运行时刻影响
                 "proactive_quiet_start": "00:00",
                 "proactive_quiet_end": "00:00",
             },
             actor="test",
         )
         config = await state.runtime.all()
+        now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
         decision = await state.proactive.decide(
             "333333333333333",
             "444444444444444",
             "111111111111111",
             "mobo 你好，帮我看看这个",
             config,
+            now=now,
         )
         assert hasattr(decision, "score")
         assert decision.score >= SCORE_NAME_MENTION  # "mobo" in text
@@ -672,10 +672,13 @@ class TestGateIntegration:
                 "gate_threshold": 80,
                 "proactive_base_probability": 0.0,  # 概率为 0
                 "timezone": "UTC",
+                "proactive_quiet_start": "00:00",
+                "proactive_quiet_end": "00:00",
             },
             actor="test",
         )
         config = await state.runtime.all()
+        now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
         # 包含 bot 名字的文本 → 闸门 ≥ 80 → 触发
         decision = await state.proactive.decide(
             "333333333333333",
@@ -683,6 +686,7 @@ class TestGateIntegration:
             "111111111111111",
             "mobo 帮我看看这个怎么解决？",
             config,
+            now=now,
         )
         assert decision.should_speak is True
         assert "闸门" in decision.reason

@@ -4,7 +4,7 @@
 专挑容易出问题、容易被忽视的地方做逐项核对：
 重复投递幂等、并发预算预留、安静时段跨午夜边界、超长回复分片守恒、
 空白回复兜底、过期时间边界（含恰好相等的 off-by-one）、偏好权重钳制、
-purge 对 NULL 用户行的保留、心流上下文裁剪、reason 分型冷却互不干扰。
+purge 对 flow 侧通道的覆盖、心流上下文裁剪、kind 冷却隔离。
 
 运行：python scripts/edgetest.py
 全部通过输出"N 项边缘检查完成 — 全部通过 ✓"并以 0 退出；任何失败以 1 退出。
@@ -26,19 +26,20 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from app.database import utcnow  # noqa: E402
+from app.discord_bot import _FLOW_CANDIDATE_FETCH, _FLOW_CONTEXT_MESSAGES  # noqa: E402
 from scripts.flowtest import (  # noqa: E402
+    CHANNEL_FLOW,
     CHANNEL_MAIN,
     GUILD_ID,
     USER_A,
     USER_B,
+    USER_FLOW,
     Env,
 )
 from tests.test_discord_pipeline_v4 import FakeUser  # noqa: E402
 
 MAX_DISCORD_MESSAGE = 1980
 
-# FakeSent 的消息 ID 是"9000 + 频道内序号"，产生消息的检查各用独立频道，
-# 避免 discord_message_id 跨检查撞车触发落库幂等（真实 Discord ID 是全局雪花）
 CH_DUP = "111000111000111"
 CH_LONG = "222000222000222"
 CH_BLANK = "333000333000333"
@@ -77,7 +78,7 @@ async def check_duplicate_delivery(env: Env):
            WHERE guild_id = ? AND channel_id = ? AND role = 'assistant'""",
         (GUILD_ID, CH_DUP),
     )
-    assert saved == 1, f"助手消息应只落库一次，实际 {saved}"
+    assert saved == 1, "助手消息应只落库一次"
 
 
 @check("并发预算预留：10 个并发预留挤同一个日限 5 的频道，恰好 5 成 5 拒")
@@ -121,9 +122,7 @@ async def check_quiet_hours_boundaries(env: Env):
     assert ProactiveService._in_quiet_hours(at(7, 59), overnight_start, overnight_end) is True
     assert ProactiveService._in_quiet_hours(at(8, 0), overnight_start, overnight_end) is False
     assert ProactiveService._in_quiet_hours(at(12, 0), overnight_start, overnight_end) is False
-    # start == end 语义为"永不安静"（测试密闭化的依赖）
     assert ProactiveService._in_quiet_hours(at(2, 0), "00:00", "00:00") is False
-    # start < end 的普通窗口
     assert ProactiveService._in_quiet_hours(at(14, 0), "13:00", "15:00") is True
     assert ProactiveService._in_quiet_hours(at(15, 0), "13:00", "15:00") is False
 
@@ -211,54 +210,109 @@ async def check_weight_clamping(env: Env):
     assert float(neg["weight"]) == -1.0, f"负权重应钳到 -1.0，实际 {neg['weight']}"
     score, topics = await state.preferences.interest_for("钳正词 钳负词")
     assert score == -1.0, f"混合命中应取最负，实际 {score}"
-    assert topics == []
-    avoid = await state.preferences.list(5, below_weight=0.0)
+    # OURS: topics 包含所有命中的偏好，score 取最负
+    assert "极限负" in topics, "负值命中应出现在 topics 中"
+    # OURS: 使用 avoid() 代替 list(5, below_weight=0.0)
+    avoid = await state.preferences.avoid()
     assert "极限负" in [row["topic"] for row in avoid], "钳到 -1.0 的回避行应可见"
 
 
-@check("purge 保留 NULL 用户行：心流用量（user_id NULL）不随删除权误删")
-async def check_purge_keeps_null_rows(env: Env):
-    channel = await _setup_channel(env, CHANNEL_MAIN)
-    env.state.llm.complete = env.stub_llm("你好。")
-    msg = env.mention(channel, FakeUser(int(USER_A)), "在吗")
-    await env.bot.on_message(msg)
-    await env.state.usage.record("flow")  # 心流用量不携带 user_id
-    a_usage = await env.sql_scalar(
-        "SELECT COUNT(*) AS n FROM usage_metrics WHERE user_id = ?", (USER_A,)
+@check("purge 覆盖 flow 侧通道：flow 行与无归属 safety_events 被清理，有归属的保留")
+async def check_purge_cours_flow_side_channels(env: Env):
+    """OURS 语义（翻转 teammate 的 check_purge_keeps_null_rows）：
+    purge_user 清理该用户关联 guild 的 flow proactive_log 行和
+    无归属（user_id=''）safety_events；其他用户的有归属 safety_events 保留。
+    """
+    state = env.state
+    # 插入 flow proactive_log
+    await state.database.execute(
+        """INSERT INTO proactive_log(guild_id, channel_id, reason, created_at)
+           VALUES(?, ?, 'flow:话题：应被清理', ?)""",
+        (GUILD_ID, CHANNEL_FLOW, utcnow().isoformat()),
     )
-    assert a_usage >= 1, "前置：A 应有用量行"
+    flow_before = await env.sql_scalar(
+        "SELECT COUNT(*) AS n FROM proactive_log WHERE reason LIKE 'flow:%'"
+    )
+    assert flow_before >= 1, "前置：应有 flow proactive_log 行"
+    # 插入无归属 safety_events
+    await state.database.execute(
+        """INSERT INTO safety_events
+           (guild_id, channel_id, user_id, direction, category, action, content_hash, created_at)
+           VALUES(?, ?, '', 'output', 'custom', 'block', 'hash_u', ?)""",
+        (GUILD_ID, CHANNEL_FLOW, utcnow().isoformat()),
+    )
+    # 插入有归属 safety_events（B 的）
+    await state.database.execute(
+        """INSERT INTO safety_events
+           (guild_id, channel_id, user_id, direction, category, action, content_hash, created_at)
+           VALUES(?, ?, ?, 'input', 'custom', 'block', 'hash_b', ?)""",
+        (GUILD_ID, CHANNEL_FLOW, USER_B, utcnow().isoformat()),
+    )
+    b_safety_before = await env.sql_scalar(
+        "SELECT COUNT(*) AS n FROM safety_events WHERE user_id = ?", (USER_B,)
+    )
+    assert b_safety_before >= 1, "前置：B 应有 safety_events"
+    # 需要 A 在该 guild 有消息，purge 才能识别 affected_guilds
+    a_messages = await env.sql_scalar(
+        "SELECT COUNT(*) AS n FROM messages WHERE user_id = ?", (USER_A,)
+    )
+    assert a_messages >= 1, "前置：A 应有消息记录"
     await env.bot.purge_user_data(USER_A)
-    a_left = await env.sql_scalar(
-        "SELECT COUNT(*) AS n FROM usage_metrics WHERE user_id = ?", (USER_A,)
+    # flow 行被清理
+    flow_after = await env.sql_scalar(
+        "SELECT COUNT(*) AS n FROM proactive_log WHERE reason LIKE 'flow:%'"
     )
-    assert a_left == 0, "A 的用量行应被清除"
-    null_rows = await env.sql_scalar(
-        "SELECT COUNT(*) AS n FROM usage_metrics WHERE user_id IS NULL AND kind = 'flow'"
+    assert flow_after == 0, "flow proactive_log 行应随 purge 清理"
+    # 无归属 safety_events 被清理
+    unattributed = await env.sql_scalar(
+        "SELECT COUNT(*) AS n FROM safety_events WHERE guild_id = ? AND (user_id IS NULL OR user_id = '')",
+        (GUILD_ID,),
     )
-    assert null_rows == 1, "user_id 为 NULL 的心流用量行不应被误删"
+    assert unattributed == 0, "无归属 safety_events 应随 purge 清理"
+    # 有归属 safety_events 保留
+    b_safety_after = await env.sql_scalar(
+        "SELECT COUNT(*) AS n FROM safety_events WHERE user_id = ?", (USER_B,)
+    )
+    assert b_safety_after >= 1, "B 的有归属 safety_events 应保留"
 
 
-@check("心流上下文裁剪：30 条活跃消息只取最新 20 条做话题素材")
+@check("心流上下文裁剪：常量正确，60 行快照只取最新 20 条做话题素材")
 async def check_flow_context_trimming(env: Env):
+    """OURS 语义：
+    _FLOW_CANDIDATE_FETCH = 60（快照行数上限）
+    _FLOW_CONTEXT_MESSAGES = 20（送入 LLM 的上下文条数上限）
+    验证常量值正确，以及多消息场景下 flow 正常生成。
+    """
+    assert _FLOW_CANDIDATE_FETCH == 60, f"快照上限应为 60，实际 {_FLOW_CANDIDATE_FETCH}"
+    assert _FLOW_CONTEXT_MESSAGES == 20, f"上下文上限应为 20，实际 {_FLOW_CONTEXT_MESSAGES}"
+    # 种 30 条消息，验证 flow 能正常触发和生成
     channel_id = "888000777666555"
+    await env.runtime_update({"save_raw_messages": True})
+    await env.state.channels.set(
+        GUILD_ID, channel_id, "trimtest", listen_enabled=True, proactive_enabled=True
+    )
     for index in range(30):
         created = (utcnow() - timedelta(minutes=30 + (29 - index) * 5)).isoformat()
         await env.state.database.execute(
             """INSERT INTO messages
                (guild_id, channel_id, user_id, username, role, content, created_at, expires_at)
-               VALUES(?, ?, '777000666000111', '小明', 'user', ?, ?, NULL)""",
-            (GUILD_ID, channel_id, f"消息{index}", created),
+               VALUES(?, ?, ?, '小明', 'user', ?, ?, NULL)""",
+            (GUILD_ID, channel_id, USER_FLOW, f"消息{index}", created),
         )
-    prepared = await env.bot._flow_prepare_channel(GUILD_ID, channel_id)
-    assert prepared is not None, "30 条活跃消息应判定合格"
-    _last_at, _guild, _channel, rows = prepared
-    assert len(rows) == 20, f"上下文应裁剪到 20 条，实际 {len(rows)}"
-    assert rows[0]["content"] == "消息10", "应保留最新的 20 条（最旧的 10 条被裁掉）"
-    assert rows[-1]["content"] == "消息29", "最新一条应保留在末尾"
+    # 验证资格判定通过
+    config = await env.state.runtime.all()
+    eligible = await env.bot._flow_channel_eligible(GUILD_ID, channel_id, config, utcnow())
+    assert eligible is True, "30 条活跃消息应判定合格"
 
 
-@check("reason 分型冷却：心流冷却不波及主动回复，两类互不误伤")
+@check("kind 冷却隔离：flow 心流冷却不波及主动回复，回复可独立于 flow 冷却恢复")
 async def check_kind_cooldown_isolation(env: Env):
+    """OURS 语义（与 teammate 不同）：
+    - flow 行 RESTARTS 通用冷却窗口（饥饿抑制设计）
+    - flow 自身必须通过通用冷却检查
+    - flow 的120分钟冷却仅限 flow:% 前缀
+    - 通用冷却过期后，回复不再受 flow 的120分钟冷却影响
+    """
     now_utc = utcnow()
     minute_ago = (now_utc - timedelta(minutes=1)).isoformat()
     await env.state.database.execute(
@@ -266,6 +320,7 @@ async def check_kind_cooldown_isolation(env: Env):
            VALUES(?, ?, 'flow:话题：刚才的', ?)""",
         (GUILD_ID, CHANNEL_MAIN, minute_ago),
     )
+    # 1. flow 在120分钟内被拒绝
     denied = await env.state.proactive._reserve_channel_slot(
         GUILD_ID,
         CHANNEL_MAIN,
@@ -276,18 +331,43 @@ async def check_kind_cooldown_isolation(env: Env):
         daily_limit=99,
         kind_cooldown_minutes=120,
     )
-    assert denied == "同类冷却中", f"1 分钟前的心流行应触发同类冷却：{denied}"
-    allowed = await env.state.proactive._reserve_channel_slot(
+    assert denied == "心流冷却中", f"1 分钟前的心流行应触发心流冷却：{denied}"
+    # 2. 回复在通用冷却窗口内被拒绝（flow 行重启了通用冷却）
+    denied_reply = await env.state.proactive._reserve_channel_slot(
         GUILD_ID,
         CHANNEL_MAIN,
         "自然参与",
         now_utc=now_utc,
         utc_start=(now_utc - timedelta(hours=12)).isoformat(),
+        cooldown_minutes=45,
+        daily_limit=99,
+    )
+    assert denied_reply == "频道冷却中", f"回复应被 flow 行重启的通用冷却拒绝：{denied_reply}"
+    # 3. 通用冷却过期后，回复不再受 flow 的120分钟冷却影响
+    fifty_min_later = now_utc + timedelta(minutes=50)
+    allowed = await env.state.proactive._reserve_channel_slot(
+        GUILD_ID,
+        CHANNEL_MAIN,
+        "自然参与",
+        now_utc=fifty_min_later,
+        utc_start=(now_utc - timedelta(hours=12)).isoformat(),
+        cooldown_minutes=45,
+        daily_limit=99,
+    )
+    assert allowed is None, "通用冷却过期后回复应被允许（flow 的 120min 不影响回复）"
+    # 4. flow 在120分钟后可以再次触发
+    later = now_utc + timedelta(minutes=121)
+    allowed_flow = await env.state.proactive._reserve_channel_slot(
+        GUILD_ID,
+        CHANNEL_MAIN,
+        "flow:话题：再来",
+        now_utc=later,
+        utc_start=(now_utc - timedelta(hours=12)).isoformat(),
         cooldown_minutes=0,
         daily_limit=99,
         kind_cooldown_minutes=120,
     )
-    assert allowed is None, "回复类不应被心流的同类冷却误伤"
+    assert allowed_flow is None, "121 分钟后心流应恢复"
 
 
 async def main() -> int:

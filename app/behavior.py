@@ -146,9 +146,16 @@ class ProactiveService:
         utc_start: str,
         cooldown_minutes: int,
         daily_limit: int,
-        kind_cooldown_minutes: int = 0,
+        kind_cooldown_minutes: int | None = None,
     ) -> str | None:
-        """Atomically check and consume a channel slot before model generation."""
+        """Atomically check and consume a channel slot before model generation.
+
+        When *kind_cooldown_minutes* is set, an additional kind-specific cooldown
+        is enforced: the last ``reason LIKE 'flow:%'`` row must be older than
+        *kind_cooldown_minutes*.  A flow row still restarts the generic proactive
+        cooldown window.  Existing callers that do not pass this kwarg are
+        unaffected.
+        """
 
         async with self.database.connect() as connection:
             await connection.execute("BEGIN IMMEDIATE")
@@ -167,22 +174,23 @@ class ProactiveService:
                     if elapsed < cooldown_minutes:
                         await connection.rollback()
                         return "频道冷却中"
-                if kind_cooldown_minutes > 0:
-                    kind = reason.split(":", 1)[0]
+                # Kind-specific cooldown: last flow:% row must be old enough.
+                if kind_cooldown_minutes is not None and kind_cooldown_minutes > 0:
                     cursor = await connection.execute(
                         """SELECT created_at FROM proactive_log
-                           WHERE guild_id = ? AND channel_id = ? AND reason LIKE ?
+                           WHERE guild_id = ? AND channel_id = ?
+                             AND reason LIKE 'flow:%'
                            ORDER BY id DESC LIMIT 1""",
-                        (guild_id, channel_id, f"{kind}:%"),
+                        (guild_id, channel_id),
                     )
-                    kind_row = await cursor.fetchone()
-                    if kind_row is not None:
-                        kind_elapsed = (
-                            now_utc - datetime.fromisoformat(str(kind_row["created_at"]))
+                    last_flow_row = await cursor.fetchone()
+                    if last_flow_row is not None:
+                        flow_elapsed = (
+                            now_utc - datetime.fromisoformat(str(last_flow_row["created_at"]))
                         ).total_seconds() / 60
-                        if kind_elapsed < kind_cooldown_minutes:
+                        if flow_elapsed < kind_cooldown_minutes:
                             await connection.rollback()
-                            return "同类冷却中"
+                            return "心流冷却中"
                 cursor = await connection.execute(
                     """SELECT COUNT(*) AS n FROM proactive_log
                        WHERE guild_id = ? AND channel_id = ? AND created_at >= ?""",
@@ -202,6 +210,26 @@ class ProactiveService:
                 await connection.rollback()
                 raise
         return None
+
+    async def update_proactive_reason(
+        self,
+        guild_id: str,
+        channel_id: str,
+        old_reason_prefix: str,
+        new_reason: str,
+    ) -> None:
+        """Update the reason of the most recent matching proactive_log row."""
+
+        await self.database.execute(
+            """UPDATE proactive_log SET reason = ?
+               WHERE id = (
+                   SELECT id FROM proactive_log
+                   WHERE guild_id = ? AND channel_id = ?
+                     AND reason LIKE ?
+                   ORDER BY id DESC LIMIT 1
+               )""",
+            (new_reason, guild_id, channel_id, old_reason_prefix + "%"),
+        )
 
     async def decide(
         self,

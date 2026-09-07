@@ -531,25 +531,6 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
         1,
     ),
     SettingField(
-        "flow_enabled",
-        "允许冷场开话题（心流）",
-        "回复与主动发言",
-        "toggle",
-        False,
-        "频道最近活跃但已冷场时，低频从上下文生成开场白；与主动回复共享每日额度。",
-    ),
-    SettingField(
-        "flow_probability",
-        "心流触发概率",
-        "回复与主动发言",
-        "number",
-        0.15,
-        "每个合格频道每轮检测的掷点概率。",
-        0.0,
-        1.0,
-        0.01,
-    ),
-    SettingField(
         "rate_limit_requests",
         "用户请求次数",
         "限流与安全",
@@ -841,6 +822,26 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
         "text",
         "👍,😂,❤️,🤔",
         "逗号分隔的表情列表，随机选取一个。",
+    ),
+    # ── Phase B：心流 ───────────────────────────────────────────────────
+    SettingField(
+        "flow_enabled",
+        "开启冷场心流",
+        "主动发言/回复决策",
+        "toggle",
+        False,
+        "频道冷场时低频抛出话题；前提：原始消息保存（save_raw_messages）已开启。",
+    ),
+    SettingField(
+        "flow_probability",
+        "心流触发概率",
+        "主动发言/回复决策",
+        "number",
+        0.15,
+        "满足所有条件后实际触发的随机概率。",
+        0.0,
+        1.0,
+        0.05,
     ),
     # ── Phase 3：工具桥 ─────────────────────────────────────────────────
     SettingField(

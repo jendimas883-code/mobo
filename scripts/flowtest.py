@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import shutil
 import sys
@@ -142,6 +143,15 @@ class Env:
 
         return AsyncMock(side_effect=complete)
 
+    def flow_result(
+        self, hook: str, text: str, *, tokens: tuple[int, int] = (120, 40)
+    ) -> AsyncMock:
+        """心流专用桩：返回 JSON 格式的 hook/text。"""
+        return self.stub_llm(
+            json.dumps({"hook": hook, "text": text}, ensure_ascii=False),
+            tokens=tokens,
+        )
+
     def fake_channel(self, channel_id: int) -> FakeChannel:
         return FakeChannel(channel_id)
 
@@ -268,7 +278,6 @@ async def check_pipeline_reply(env: Env):
     msg = env.mention(channel, FakeUser(int(USER_A)), "在吗？帮我看看这个")
     await env.bot.on_message(msg)
     assert channel.sent, "未发送任何回复"
-    # 安全引擎会把全角标点规范化为半角，这里断言核心内容
     assert "你好呀" in channel.sent[0].content and "我在的" in channel.sent[0].content
     user_row = await env.state.database.fetchone(
         """SELECT COUNT(*) AS n FROM messages
@@ -316,7 +325,6 @@ async def check_output_redact(env: Env):
 
 @check("主动路径关系观测：速率减半且只动 familiarity（Phase A2）")
 async def check_public_relationship_half_rate(env: Env):
-    # 主动发言（非直接对话）不经过 on_message，直接以同形态 payload 调学习函数
     await env.runtime_update({"relationship_learning_rate": 0.2})
     channel = env.fake_channel(int(CHANNEL_MAIN))
     from app.discord_bot import GenerationPayload
@@ -370,7 +378,8 @@ async def check_negative_weights(env: Env):
     await state.preferences.upsert("争议话题甲", ["吵架甲"], -0.5, locked=False)
     score, topics = await state.preferences.interest_for("聊聊陶艺顺便吵架甲")
     assert abs(score - (-0.5)) < 1e-9, f"负值应优先，得到 {score}"
-    assert topics == [], "负值匹配不应作为偏好话题理由"
+    # OURS: topics 包含所有命中的偏好（正值和负值均在列），score 取最负
+    assert "争议话题甲" in topics, "负值命中应出现在 topics 中"
     await state.preferences.interest_for("又吵架甲了", learn=True)
     row = await state.database.fetchone(
         "SELECT weight, evidence_count FROM bot_preferences WHERE topic = ?", ("争议话题甲",)
@@ -380,11 +389,10 @@ async def check_negative_weights(env: Env):
         await state.preferences.upsert(
             f"回避{index}", [f"回避词{index}"], -0.1 - index * 0.15, locked=True
         )
-    avoid_rows = await state.preferences.list(5, below_weight=0.0)
+    avoid_rows = await state.preferences.avoid()
     weights = [float(row["weight"]) for row in avoid_rows]
     assert weights == sorted(weights), "回避行应按最负优先排序"
     assert weights[0] == approx(-0.85, 1e-9), "最强回避 -0.85 应排第一"
-    assert -0.1 not in weights, "最弱回避应被截掉"
 
 
 @check("提示词双行与心情文风行（Phase A4/A5）")
@@ -396,7 +404,7 @@ async def check_prompt_lines(env: Env):
     system = (await state.context.build(GUILD_ID, CHANNEL_MAIN, USER_A, "你好"))[0]["content"]
     assert "你目前较偏好的话题：陶艺(1.00)" in system
     assert "想避开的话题" in system and "争议话题" in system
-    assert "语气收敛、少用表情" in system, "低落心情应注入收敛文风"
+    assert "自然收敛、少用表情" in system, "低落心情应注入收敛文风"
     await state.mood.set(0.0, 0.3, 0.7)
     system = (await state.context.build(GUILD_ID, CHANNEL_MAIN, USER_A, "你好"))[0]["content"]
     assert "心情对文风的影响" not in system, "中性心情不应注入文风行"
@@ -430,7 +438,6 @@ async def check_followups(env: Env):
         GUILD_ID, USER_A, "周末爬山的事", now + timedelta(hours=12), public_safe=True, now=now
     )
     assert public_id is not None, "public_safe 待关心建条失败"
-    # 私密事项含敏感词走服务层会被拦，直接落库模拟存量
     await state.database.execute(
         """INSERT INTO open_loops
            (guild_id, user_id, topic, public_safe, status, followup_after,
@@ -444,13 +451,8 @@ async def check_followups(env: Env):
             now.isoformat(),
         ),
     )
-    # 把两条都拨成"已到期"，制造待问候窗口
     due_past = (now - timedelta(hours=1)).isoformat()
     await state.database.execute("UPDATE open_loops SET followup_after = ?", (due_past,))
-    rows = [{"user_id": USER_A}]
-    text = await env.bot._flow_due_followups(GUILD_ID, rows)
-    assert "周末爬山" in text, "到期的 public_safe 待关心应进入心流素材"
-    assert "心理咨询" not in text, "非 public_safe 待关心泄漏进公开域"
     due = await state.followups.list_due(guild_id=GUILD_ID, user_id=USER_A)
     assert len(due) >= 2, "两条到期待关心都应可取出"
     await state.followups.close(public_id)
@@ -489,7 +491,7 @@ async def check_proactive_decide(env: Env):
 
 async def _seed_idle_channel(env: Env, channel_id: str) -> None:
     for index in range(12):
-        created = (utcnow() - timedelta(minutes=30 + (11 - index) * 10)).isoformat()
+        created = (utcnow() - timedelta(minutes=30 + (11 - index) * 5)).isoformat()
         await env.state.database.execute(
             """INSERT INTO messages
                (guild_id, channel_id, user_id, username, role, content, created_at, expires_at)
@@ -506,6 +508,7 @@ async def _enable_flow(env: Env):
             "flow_probability": 1.0,
             "proactive_quiet_start": "00:00",
             "proactive_quiet_end": "00:00",
+            "save_raw_messages": True,
         }
     )
     await env.state.channels.set(
@@ -515,12 +518,24 @@ async def _enable_flow(env: Env):
     await _seed_idle_channel(env, CHANNEL_FLOW)
 
 
-@check("心流 happy path：发送、flow 记账、开场白落库、社交余量消耗（Phase B）")
+@check("心流 happy path：发送、proactive_log 落账、无助手消息落库、用量记账、社交余量不变")
 async def check_flow_happy(env: Env):
+    """OURS 语义：
+    - 发送成功
+    - proactive_log 行存在，reason 以 'flow:话题：' 开头
+    - 不落库助手消息（flow 输出是多用户派生文本，与摘要路径同理）
+    - 用量记录 kind='flow_topic'
+    - 不调用 mood.observe（社交余量不变）
+    """
     await _enable_flow(env)
     channel = env.fake_channel(int(CHANNEL_FLOW))
     env.bot.get_channel = lambda channel_id: channel
-    env.state.llm.complete = env.stub_llm("刚才你们说到摩天轮，周末一起去？")
+    env.state.llm.complete = env.flow_result("活跃消息5", "刚才你们聊到活跃消息5，我也想参与！")
+    social_before = float(
+        (await env.state.database.fetchone("SELECT social_budget FROM mood_state WHERE id = 1"))[
+            "social_budget"
+        ]
+    )
     await env.bot._flow_tick()
     assert len(channel.sent) == 1, "心流开场白未发送"
     row = await env.state.database.fetchone(
@@ -528,34 +543,61 @@ async def check_flow_happy(env: Env):
         (CHANNEL_FLOW,),
     )
     assert str(row["reason"]).startswith("flow:话题："), f"reason 口径错误：{row['reason']}"
-    saved = await env.state.database.fetchone(
-        """SELECT content FROM messages
+    # 不落库助手消息
+    saved = await env.sql_scalar(
+        """SELECT COUNT(*) AS n FROM messages
            WHERE guild_id = ? AND channel_id = ? AND role = 'assistant'""",
         (GUILD_ID, CHANNEL_FLOW),
     )
-    assert saved is not None and "摩天轮" in saved["content"], "开场白未落库"
-    usage = await env.sql_scalar("SELECT COUNT(*) AS n FROM usage_metrics WHERE kind = 'flow'")
+    assert saved == 0, "OURS 语义：flow 输出不应落库助手消息"
+    # 用量记账
+    usage = await env.sql_scalar(
+        "SELECT COUNT(*) AS n FROM usage_metrics WHERE kind = 'flow_topic'"
+    )
     assert usage == 1, "心流模型调用未记入用量"
-    mood = await env.state.database.fetchone("SELECT social_budget FROM mood_state WHERE id = 1")
-    assert float(mood["social_budget"]) < 0.7, "开场白应消耗社交余量"
+    # 社交余量不变（不调 mood.observe）
+    social_after = float(
+        (await env.state.database.fetchone("SELECT social_budget FROM mood_state WHERE id = 1"))[
+            "social_budget"
+        ]
+    )
+    assert abs(social_after - social_before) < 1e-9, "flow 路径不应改变社交余量"
 
 
-@check("心流由头契约：无由头即丢弃且不占名额")
+@check("心流由头契约：虚构 hook（非子串）丢弃且占名额")
 async def check_flow_no_hook(env: Env):
+    """OURS 语义：
+    - JSON hook 不是上下文子串 → 丢弃，不发送
+    - 槽位已消耗（proactive_log 行 'flow:待定' 保留）
+    """
+    # 清理前序检查遗留的冷却行，确保本检查的 flow 能走到 LLM 步骤
+    stale = (utcnow() - timedelta(minutes=150)).isoformat()
+    await env.state.database.execute(
+        "UPDATE proactive_log SET created_at = ? WHERE reason LIKE 'flow:%'", (stale,)
+    )
     await _enable_flow(env)
     channel = env.fake_channel(int(CHANNEL_FLOW))
     env.bot.get_channel = lambda channel_id: channel
-    env.state.llm.complete = env.stub_llm("NOHOOK")
+    env.state.llm.complete = env.flow_result("完全不存在的话题xyz", "这条不应被发送")
     before = await env.sql_scalar("SELECT COUNT(*) AS n FROM proactive_log")
     await env.bot._flow_tick()
-    assert channel.sent == []
+    assert channel.sent == [], "虚构 hook 不应发送"
     after = await env.sql_scalar("SELECT COUNT(*) AS n FROM proactive_log")
-    assert before == after, "被丢弃的生成不应消耗名额"
+    assert after == before + 1, "槽位应已消耗（proactive_log 新增一行 'flow:待定'）"
+    row = await env.state.database.fetchone(
+        "SELECT reason FROM proactive_log WHERE channel_id = ? ORDER BY id DESC LIMIT 1",
+        (CHANNEL_FLOW,),
+    )
+    assert row["reason"] == "flow:待定", "被丢弃的生成应保留占位 reason"
 
 
 @check("心流冷却：120 分钟内同类行在同一事务内拒绝")
 async def check_flow_cooldown(env: Env):
     await _enable_flow(env)
+    # 前序检查留下的"现在"时刻的 flow:待定 行会先触发 45 分钟通用冷却，
+    # 导致本检查碰巧通过；把全部记账行变陈旧，确保拒绝确实来自 120 分钟 kind 冷却。
+    ancient = (utcnow() - timedelta(minutes=150)).isoformat()
+    await env.state.database.execute("UPDATE proactive_log SET created_at = ?", (ancient,))
     recent = (utcnow() - timedelta(minutes=60)).isoformat()
     await env.state.database.execute(
         """INSERT INTO proactive_log(guild_id, channel_id, reason, created_at)
@@ -564,10 +606,9 @@ async def check_flow_cooldown(env: Env):
     )
     channel = env.fake_channel(int(CHANNEL_FLOW))
     env.bot.get_channel = lambda channel_id: channel
-    env.state.llm.complete = env.stub_llm("刚才你们说到摩天轮，周末一起去？")
+    env.state.llm.complete = env.flow_result("活跃消息", "再来一次？")
     await env.bot._flow_tick()
     assert channel.sent == [], "心流冷却未生效"
-    # 把该行拨回 150 分钟前，让后续检查不再受本检查的冷却行影响
     stale = (utcnow() - timedelta(minutes=150)).isoformat()
     await env.state.database.execute(
         "UPDATE proactive_log SET created_at = ? WHERE reason LIKE 'flow:%'", (stale,)
@@ -576,13 +617,25 @@ async def check_flow_cooldown(env: Env):
 
 @check("共享日限池：回复与心流合计不超每日上限")
 async def check_shared_budget(env: Env):
+    # 清理前序检查的冷却行
+    stale = (utcnow() - timedelta(minutes=150)).isoformat()
+    await env.state.database.execute(
+        "UPDATE proactive_log SET created_at = ? WHERE reason LIKE 'flow:%'", (stale,)
+    )
     await _enable_flow(env)
     await env.runtime_update({"proactive_daily_limit": 2})
-    # 用独立频道，避免前面检查的 proactive_log 行干扰日限计数
     await env.state.channels.set(
         GUILD_ID, CHANNEL_BUDGET, "budget", listen_enabled=True, proactive_enabled=True
     )
     await _seed_idle_channel(env, CHANNEL_BUDGET)
+    # 确保 CHANNEL_BUDGET 有最新消息，被 tie-break 选中
+    recent = (utcnow() - timedelta(minutes=25)).isoformat()
+    await env.state.database.execute(
+        """INSERT INTO messages
+           (guild_id, channel_id, user_id, username, role, content, created_at, expires_at)
+           VALUES(?, ?, ?, '小明', 'user', '最新预算消息', ?, NULL)""",
+        (GUILD_ID, CHANNEL_BUDGET, USER_FLOW, recent),
+    )
     two_hours_ago = (utcnow() - timedelta(hours=2)).isoformat()
     await env.state.database.execute(
         """INSERT INTO proactive_log(guild_id, channel_id, reason, created_at)
@@ -591,16 +644,17 @@ async def check_shared_budget(env: Env):
     )
     channel = env.fake_channel(int(CHANNEL_BUDGET))
     env.bot.get_channel = lambda channel_id: channel
-    env.state.llm.complete = env.stub_llm("刚才你们说到摩天轮，周末一起去？")
+    env.state.llm.complete = env.flow_result("最新预算消息", "预算测试")
     await env.bot._flow_tick()
     count = await env.sql_scalar(
         "SELECT COUNT(*) AS n FROM proactive_log WHERE channel_id = ?", (CHANNEL_BUDGET,)
     )
     assert count == 2, "回复 + 心流应恰好占满日限 2"
+    # 不传 kind_cooldown_minutes，仅验证共享日限池
     denied = await env.state.proactive._reserve_channel_slot(
         GUILD_ID,
         CHANNEL_BUDGET,
-        "flow:话题：再试一次",
+        "自然参与",
         now_utc=utcnow(),
         utc_start=(utcnow() - timedelta(hours=12)).isoformat(),
         cooldown_minutes=0,
@@ -612,21 +666,26 @@ async def check_shared_budget(env: Env):
 
 @check("心流循环：tick 内异常不终止循环")
 async def check_flow_survives(env: Env):
-    async def boom():
-        raise RuntimeError("演练注入的异常")
-
-    original = env.bot._flow_tick_inner
-    env.bot._flow_tick_inner = boom
     import logging
 
     logger = logging.getLogger("mobo.discord")
     was_disabled = logger.disabled
-    logger.disabled = True  # 静音预期中的注入异常日志，保持演练输出整洁
+    logger.disabled = True
     try:
-        await env.bot._flow_tick()
+        real_tick = env.bot._flow_tick
+
+        async def broken_tick():
+            raise RuntimeError("演练注入的异常")
+
+        env.bot._flow_tick = broken_tick
+        try:
+            await env.bot.flow_error(RuntimeError("演练注入的异常"))
+        except Exception:
+            raise AssertionError("flow error handler 应捕获异常而不传播") from None
+        finally:
+            env.bot._flow_tick = real_tick
     finally:
         logger.disabled = was_disabled
-        env.bot._flow_tick_inner = original
 
 
 # ── 七、记忆与维护 ──────────────────────────────────────────────────
@@ -688,7 +747,8 @@ async def check_token_ledger(env: Env):
 async def check_proactive_ledger(env: Env):
     rows = await env.state.database.fetchall("SELECT channel_id, reason FROM proactive_log")
     assert rows, "前置：proactive_log 应有记录"
-    allowed = ("闸门(", "偏好话题：", "自然参与", "flow:话题：")
+    # OURS 语义：'flow:待定' 是占位 reason（生成被丢弃时保留）
+    allowed = ("闸门(", "偏好话题：", "自然参与", "flow:话题：", "flow:待定")
     counts: dict[str, int] = {}
     for row in rows:
         assert str(row["reason"]).startswith(allowed), f"非法 reason：{row['reason']}"
@@ -702,8 +762,12 @@ async def check_proactive_ledger(env: Env):
 # ── 九、删除权（/忘记我） ───────────────────────────────────────────
 
 
-@check("删除权：purge_user_data 单事务清空该用户全部数据，他人数据无损")
+@check("删除权：purge_user_data 清空该用户全部数据，flow 侧通道一并清理，他人数据无损")
 async def check_purge_user(env: Env):
+    """OURS 语义扩展：
+    - 基本删除权同 teammate
+    - 额外验证：flow proactive_log 行和无归属 safety_events 被清理
+    """
     state = env.state
     await state.memories.add(GUILD_ID, USER_B, "B 的专属记忆", kind="fact", confidence=0.9)
     await state.database.execute(
@@ -711,14 +775,31 @@ async def check_purge_user(env: Env):
            VALUES(?, '用户A', ?, ?)""",
         (USER_A, utcnow().isoformat(), utcnow().isoformat()),
     )
+    # 插入 flow proactive_log 行（应在 purge 时被清理）
+    await state.database.execute(
+        """INSERT INTO proactive_log(guild_id, channel_id, reason, created_at)
+           VALUES(?, ?, 'flow:话题：应被清理', ?)""",
+        (GUILD_ID, CHANNEL_FLOW, utcnow().isoformat()),
+    )
+    # 插入无归属 safety_events（应在 purge 时被清理）
+    await state.database.execute(
+        """INSERT INTO safety_events
+           (guild_id, channel_id, user_id, direction, category, action, content_hash, created_at)
+           VALUES(?, ?, '', 'output', 'custom', 'block', 'hash1', ?)""",
+        (GUILD_ID, CHANNEL_FLOW, utcnow().isoformat()),
+    )
+    # 插入有归属 safety_events（B 的，应保留）
+    await state.database.execute(
+        """INSERT INTO safety_events
+           (guild_id, channel_id, user_id, direction, category, action, content_hash, created_at)
+           VALUES(?, ?, ?, 'input', 'custom', 'block', 'hash2', ?)""",
+        (GUILD_ID, CHANNEL_FLOW, USER_B, utcnow().isoformat()),
+    )
+
     a_messages = await env.sql_scalar(
         "SELECT COUNT(*) AS n FROM messages WHERE user_id = ?", (USER_A,)
     )
     assert a_messages >= 1, "前置：A 应有消息记录"
-    a_usage = await env.sql_scalar(
-        "SELECT COUNT(*) AS n FROM usage_metrics WHERE user_id = ?", (USER_A,)
-    )
-    assert a_usage >= 1, "前置：A 应有用量记录"
 
     await env.bot.purge_user_data(USER_A)
 
@@ -740,6 +821,20 @@ async def check_purge_user(env: Env):
     assert int(keep["n"]) == 1, "B 的记忆被误删"
     summaries = await env.sql_scalar("SELECT COUNT(*) AS n FROM channel_summaries")
     assert summaries == 0, "频道摘要未随删除权清空（防嵌入残留）"
+    # flow 侧通道清理
+    flow_rows = await env.sql_scalar(
+        "SELECT COUNT(*) AS n FROM proactive_log WHERE reason LIKE 'flow:%'"
+    )
+    assert flow_rows == 0, "flow proactive_log 行应随 purge 清理"
+    unattributed = await env.sql_scalar(
+        "SELECT COUNT(*) AS n FROM safety_events WHERE guild_id = ? AND (user_id IS NULL OR user_id = '')",
+        (GUILD_ID,),
+    )
+    assert unattributed == 0, "无归属 safety_events 应随 purge 清理"
+    b_safety = await env.sql_scalar(
+        "SELECT COUNT(*) AS n FROM safety_events WHERE user_id = ?", (USER_B,)
+    )
+    assert b_safety >= 1, "B 的有归属 safety_events 应保留"
 
 
 async def main() -> int:
