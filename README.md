@@ -180,6 +180,8 @@ pip install -r requirements-dev.txt
 python -m ruff check .
 python -m ruff format --check .
 python -m pytest
+python scripts/flowtest.py
+python scripts/edgetest.py
 ```
 
 测试覆盖认证与并发防爆破、CSRF、管理员 ID、配置加密、数据库迁移备份和单实例锁、公开记忆隔离与全局删除屏障、并发关系更新、中文命令、连续消息合并与取消、正在输入、动态总结边界与最小留存、模型发现/测试/启用、安全规则降级、反馈和主动发言并发预算。
