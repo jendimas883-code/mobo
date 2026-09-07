@@ -10,8 +10,8 @@ from __future__ import annotations
 import random
 import re
 from collections import defaultdict
+from collections.abc import Sequence
 from math import exp
-from typing import Sequence
 
 # ── jieba + pypinyin：首次使用时惰性构建，prewarm() 可在启动时预热 ──
 import jieba  # type: ignore[import-untyped]
@@ -21,14 +21,15 @@ _MAX_DISCORD_MESSAGE = 1980
 
 # ── Discord 免疫区域正则 ─────────────────────────────────────────────
 _IMMUNITY_RE = re.compile(
-    r"```[\s\S]*?```"                       # fenced code block
-    r"|`[^`\n]+`"                            # inline code
-    r"|https?://[^\s\u4e00-\u9fff，。；！？、）】》：""''…]+"  # URL（不吞后续中文）
-    r"|<@!?\d{15,22}>"                       # user mention
-    r"|<@&\d{15,22}>"                        # role mention
-    r"|<#\d{15,22}>"                         # channel mention
-    r"|<a?:\w{2,32}:\d{15,22}>"             # custom emoji
-    r"|[^\S\r\n]*@\S+"                       # @text
+    r"```[\s\S]*?```"  # fenced code block
+    r"|`[^`\n]+`"  # inline code
+    r"|https?://[^\s\u4e00-\u9fff，。；！？、）】》："
+    "''…]+"  # URL（不吞后续中文）
+    r"|<@!?\d{15,22}>"  # user mention
+    r"|<@&\d{15,22}>"  # role mention
+    r"|<#\d{15,22}>"  # channel mention
+    r"|<a?:\w{2,32}:\d{15,22}>"  # custom emoji
+    r"|[^\S\r\n]*@\S+"  # @text
 )
 
 
@@ -188,8 +189,11 @@ def _create_typo_sentence(
             py = word_pinyin[0]
             if random.random() < error_rate:
                 similar = _get_similar_frequency_chars(
-                    char, py, min_freq=min_freq,
-                    tone_error_rate=tone_error_rate, max_freq_diff=max_freq_diff,
+                    char,
+                    py,
+                    min_freq=min_freq,
+                    tone_error_rate=tone_error_rate,
+                    max_freq_diff=max_freq_diff,
                 )
                 if similar:
                     typo_char = random.choice(similar)
@@ -204,12 +208,15 @@ def _create_typo_sentence(
         else:
             # 多字词内逐字替换（概率降低）
             word_result: list[str] = []
-            for char, py in zip(word, word_pinyin):
+            for char, py in zip(word, word_pinyin, strict=False):
                 word_error_rate = error_rate * (0.7 ** (len(word) - 1))
                 if random.random() < word_error_rate:
                     similar = _get_similar_frequency_chars(
-                        char, py, min_freq=min_freq,
-                        tone_error_rate=tone_error_rate, max_freq_diff=max_freq_diff,
+                        char,
+                        py,
+                        min_freq=min_freq,
+                        tone_error_rate=tone_error_rate,
+                        max_freq_diff=max_freq_diff,
                     )
                     if similar:
                         typo_char = random.choice(similar)
@@ -226,9 +233,7 @@ def _create_typo_sentence(
     return "".join(result)
 
 
-def _get_word_homophones(
-    word: str, word_pinyin: list[str], *, min_freq: float = 5
-) -> list[str]:
+def _get_word_homophones(word: str, word_pinyin: list[str], *, min_freq: float = 5) -> list[str]:
     """获取整词的同音词（高频有意义词语）。"""
     _ensure_loaded()
     if len(word) <= 1:
@@ -286,8 +291,18 @@ def _split_sentences(text: str) -> list[str]:
     zones = _find_immunity_zones(text)
 
     # 引号追踪
-    quote_chars = {'"', "'", "\u201c", "\u201d", "\u2018", "\u2019",
-                   "\u300c", "\u300d", "\u300e", "\u300f"}
+    quote_chars = {
+        '"',
+        "'",
+        "\u201c",
+        "\u201d",
+        "\u2018",
+        "\u2019",
+        "\u300c",
+        "\u300d",
+        "\u300e",
+        "\u300f",
+    }
     inside_quote = [False] * len_text
     in_quote = False
     current_quote_char = ""
@@ -393,7 +408,7 @@ def _merge_to_max(sentences: list[str], max_count: int) -> list[str]:
         remaining = n - start
         remaining_groups = max_count - group_idx
         group_size = (remaining + remaining_groups - 1) // remaining_groups
-        result.append("".join(sentences[start: start + group_size]))
+        result.append("".join(sentences[start : start + group_size]))
         start += group_size
     return result
 
@@ -428,7 +443,7 @@ def typing_delay(fragment: str, *, typing_speed: float = 12.0) -> float:
     if typing_speed <= 0:
         return 0.0
     chinese_time = 1.0 / typing_speed  # 每中文字符秒
-    english_time = chinese_time * 0.5   # 英文更快
+    english_time = chinese_time * 0.5  # 英文更快
     total = 0.0
     for char in fragment:
         if "\u4e00" <= char <= "\u9fff":
@@ -471,7 +486,7 @@ def fragments(
 
     # 截断到 max_fragments（多余合并到最后一个；合并若超限则再硬拆，保证单条 ≤ limit）
     if len(result) > max_fragments and max_fragments > 0:
-        merged_tail = "".join(result[max_fragments - 1:])
+        merged_tail = "".join(result[max_fragments - 1 :])
         result = result[: max_fragments - 1] + _hard_split(merged_tail, limit)
 
     return result
@@ -481,7 +496,11 @@ def _inject_typo_safe(text: str, typo_rate: float) -> str:
     """在非免疫区域注入错别字。"""
     zones = _find_immunity_zones(text)
     if not zones:
-        return _create_typo_sentence(text, error_rate=typo_rate) if random.random() < typo_rate else text
+        return (
+            _create_typo_sentence(text, error_rate=typo_rate)
+            if random.random() < typo_rate
+            else text
+        )
 
     # 分段处理：免疫区间原样保留，非免疫区间可能注入错别字
     result_parts: list[str] = []

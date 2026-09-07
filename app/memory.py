@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 import re
 import unicodedata
@@ -86,7 +85,14 @@ class MemoryService:
                        expires_at = CASE WHEN expires_at IS NULL THEN NULL
                                          ELSE MAX(expires_at, ?) END
                        WHERE id = ?""",
-                    (confidence, importance, iso_now(), iso_now(), reinforce_expires_at, existing["id"]),
+                    (
+                        confidence,
+                        importance,
+                        iso_now(),
+                        iso_now(),
+                        reinforce_expires_at,
+                        existing["id"],
+                    ),
                 )
             else:
                 await self.database.execute(
