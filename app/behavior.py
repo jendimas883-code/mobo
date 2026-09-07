@@ -146,6 +146,7 @@ class ProactiveService:
         utc_start: str,
         cooldown_minutes: int,
         daily_limit: int,
+        kind_cooldown_minutes: int = 0,
     ) -> str | None:
         """Atomically check and consume a channel slot before model generation."""
 
@@ -166,6 +167,22 @@ class ProactiveService:
                     if elapsed < cooldown_minutes:
                         await connection.rollback()
                         return "频道冷却中"
+                if kind_cooldown_minutes > 0:
+                    kind = reason.split(":", 1)[0]
+                    cursor = await connection.execute(
+                        """SELECT created_at FROM proactive_log
+                           WHERE guild_id = ? AND channel_id = ? AND reason LIKE ?
+                           ORDER BY id DESC LIMIT 1""",
+                        (guild_id, channel_id, f"{kind}:%"),
+                    )
+                    kind_row = await cursor.fetchone()
+                    if kind_row is not None:
+                        kind_elapsed = (
+                            now_utc - datetime.fromisoformat(str(kind_row["created_at"]))
+                        ).total_seconds() / 60
+                        if kind_elapsed < kind_cooldown_minutes:
+                            await connection.rollback()
+                            return "同类冷却中"
                 cursor = await connection.execute(
                     """SELECT COUNT(*) AS n FROM proactive_log
                        WHERE guild_id = ? AND channel_id = ? AND created_at >= ?""",
@@ -332,10 +349,3 @@ class ProactiveService:
             or 0
         )
         return used_tokens >= soft_budget
-
-    async def record(self, guild_id: str, channel_id: str, reason: str) -> None:
-        await self.database.execute(
-            """INSERT INTO proactive_log(guild_id, channel_id, reason, created_at)
-               VALUES(?, ?, ?, ?)""",
-            (guild_id, channel_id, reason, iso_now()),
-        )

@@ -35,6 +35,7 @@
       <label class="check-label"><input name="locked" type="checkbox"> 锁定，不再自动变化</label>
       <button class="primary-button" type="submit">新增或覆盖</button>
     </form>
+    <p class="muted">权重支持负值：负数表示想避开的话题，mobo 会降低相关参与意愿、不接相关话头；正数表示更愿意参与。</p>
     <div class="preference-list editable">
       {% for item in preferences %}
       <div data-preference-id="{{ item.id }}"><span><strong>{{ item.topic }}</strong><small>{{ item.keywords|join(' · ') or '无关键词' }}</small></span><b>{{ '%+.2f'|format(item.weight) }}</b><em>{{ '锁定' if item.locked else item.evidence_count ~ ' 次证据' }}</em><button type="button" data-delete-preference aria-label="删除 {{ item.topic }}">删除</button></div>
