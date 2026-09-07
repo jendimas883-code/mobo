@@ -10,9 +10,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.agent import (
-    BRIDGE_CHAR_CAP,
-    MAX_ROUNDS,
     _UNTRUSTED_PREFIX,
+    BRIDGE_CHAR_CAP,
     _bot_bridge_handler,
     _extract_field,
     _find_endpoint,
@@ -22,7 +21,6 @@ from app.agent import (
     tools_enabled_for_guild,
 )
 from app.llm import ModelResult
-
 
 # ═══════════════════════════════════════════════════════════════════════
 #  辅助构造
@@ -81,11 +79,13 @@ class _StubGateway:
         self.calls: list[dict[str, Any]] = []
 
     async def complete(self, config, messages, *, role="chat", tools=None):
-        self.calls.append({
-            "messages": messages,
-            "tools": tools,
-            "role": role,
-        })
+        self.calls.append(
+            {
+                "messages": messages,
+                "tools": tools,
+                "role": role,
+            }
+        )
         if self._call_index >= len(self._results):
             return ModelResult(
                 text="（桩用尽）",
@@ -159,9 +159,7 @@ class TestBridgeTemplateRendering:
     async def test_closing_brace_also_rejected(self):
         """右花括号也被拒绝。"""
         endpoints = [_endpoint()]
-        result = await _bot_bridge_handler(
-            "测试端点", "hello }", bridge_endpoints=endpoints
-        )
+        result = await _bot_bridge_handler("测试端点", "hello }", bridge_endpoints=endpoints)
         assert "非法字符" in result
 
     @pytest.mark.asyncio
@@ -176,9 +174,7 @@ class TestBridgeTemplateRendering:
 
         monkeypatch.setattr(agent_mod, "_http_call", fake_http)
         endpoints = [_endpoint(request_template='{"q": "{input}"}', response_field="data.answer")]
-        result = await _bot_bridge_handler(
-            "测试端点", "你好世界", bridge_endpoints=endpoints
-        )
+        result = await _bot_bridge_handler("测试端点", "你好世界", bridge_endpoints=endpoints)
         assert result == "OK"
 
     @pytest.mark.asyncio
@@ -217,9 +213,7 @@ class TestBridgeMissingEndpoint:
 
     @pytest.mark.asyncio
     async def test_missing_endpoint_returns_error(self):
-        result = await _bot_bridge_handler(
-            "不存在的端点", "hello", bridge_endpoints=[]
-        )
+        result = await _bot_bridge_handler("不存在的端点", "hello", bridge_endpoints=[])
         assert "未找到" in result
 
     def test_find_endpoint_by_name(self):
@@ -299,7 +293,9 @@ class TestAgentLoopWithToolCalls:
         registry = {"bot_bridge": ("desc", stub_handler)}
 
         out = await agent_loop(
-            gateway, _config(), [{"role": "user", "content": "查一下"}],
+            gateway,
+            _config(),
+            [{"role": "user", "content": "查一下"}],
             tool_registry=registry,
         )
         assert out.text == "根据端点返回，结果是 OK"
@@ -315,7 +311,9 @@ class TestAgentLoopWithToolCalls:
         """空工具注册表时直接调用 complete，不传 tools。"""
         gateway = _StubGateway([_final_result("ok")])
         out = await agent_loop(
-            gateway, _config(), [{"role": "user", "content": "hi"}],
+            gateway,
+            _config(),
+            [{"role": "user", "content": "hi"}],
             tool_registry={},
         )
         assert out.text == "ok"
@@ -334,9 +332,12 @@ class TestAgentLoopRoundCap:
             return "ok"
 
         registry = {"bot_bridge": ("desc", stub_handler)}
-        out = await agent_loop(
-            gateway, _config(), [{"role": "user", "content": "test"}],
-            tool_registry=registry, max_rounds=3,
+        await agent_loop(
+            gateway,
+            _config(),
+            [{"role": "user", "content": "test"}],
+            tool_registry=registry,
+            max_rounds=3,
         )
         assert len(gateway.calls) == 3
 
@@ -355,8 +356,11 @@ class TestAgentLoopTimeout:
         gateway = _StubGateway([tc])
         registry = {"bot_bridge": ("desc", slow_handler)}
         out = await agent_loop(
-            gateway, _config(), [{"role": "user", "content": "test"}],
-            tool_registry=registry, total_timeout=0.01,
+            gateway,
+            _config(),
+            [{"role": "user", "content": "test"}],
+            tool_registry=registry,
+            total_timeout=0.01,
         )
         assert out is not None
 
@@ -372,8 +376,11 @@ class TestAgentLoopTimeout:
         gateway = _StubGateway([tc, _final_result("done")])
         registry = {"bot_bridge": ("desc", slow_handler)}
         out = await agent_loop(
-            gateway, _config(), [{"role": "user", "content": "test"}],
-            tool_registry=registry, total_timeout=0.05,
+            gateway,
+            _config(),
+            [{"role": "user", "content": "test"}],
+            tool_registry=registry,
+            total_timeout=0.05,
         )
         # handler 被 wait_for 取消，循环降级而不是等 3 秒
         assert out is not None
@@ -390,7 +397,9 @@ class TestAgentLoopAccounting:
         gateway = _StubGateway([_tool_call_result(), _final_result("done")])
         registry = {"bot_bridge": ("desc", stub_handler)}
         out = await agent_loop(
-            gateway, _config(), [{"role": "user", "content": "test"}],
+            gateway,
+            _config(),
+            [{"role": "user", "content": "test"}],
             tool_registry=registry,
         )
         assert out.input_tokens == 10 + 15
@@ -407,7 +416,9 @@ class TestAgentLoopAccounting:
         registry = {"bot_bridge": ("desc", None)}
         with pytest.raises(RuntimeError, match="provider down"):
             await agent_loop(
-                FailingGateway(), _config(), [{"role": "user", "content": "test"}],
+                FailingGateway(),
+                _config(),
+                [{"role": "user", "content": "test"}],
                 tool_registry=registry,
             )
 
@@ -426,15 +437,20 @@ class TestAgentLoopAuditLogging:
             round_state=round_state,
         )
         # 让真实 HTTP 不可达 → status=error，但审计仍恰好一行
-        gateway = _StubGateway([
-            _tool_call_result(),
-            _final_result("done"),
-        ])
+        gateway = _StubGateway(
+            [
+                _tool_call_result(),
+                _final_result("done"),
+            ]
+        )
         round_state["round"] = 1
 
         await agent_loop(
-            gateway, _config(), [{"role": "user", "content": "test"}],
-            tool_registry=registry, round_state=round_state,
+            gateway,
+            _config(),
+            [{"role": "user", "content": "test"}],
+            tool_registry=registry,
+            round_state=round_state,
         )
         audit_fn.assert_called_once()
         call_kwargs = audit_fn.call_args.kwargs
@@ -452,8 +468,12 @@ class TestAgentLoopAuditLogging:
         tc = _tool_call_result()
         # 改名为未注册工具
         tc = ModelResult(
-            text="", input_tokens=1, output_tokens=1, latency_ms=0,
-            provider="openai", model="chat-model",
+            text="",
+            input_tokens=1,
+            output_tokens=1,
+            latency_ms=0,
+            provider="openai",
+            model="chat-model",
             tool_calls=(
                 {
                     "id": "c1",
@@ -469,8 +489,12 @@ class TestAgentLoopAuditLogging:
         registry = {"bot_bridge": ("desc", stub_handler)}
 
         await agent_loop(
-            gateway, _config(), [{"role": "user", "content": "test"}],
-            tool_registry=registry, audit_fn=audit_fn, actor="test:user",
+            gateway,
+            _config(),
+            [{"role": "user", "content": "test"}],
+            tool_registry=registry,
+            audit_fn=audit_fn,
+            actor="test:user",
         )
         audit_fn.assert_called_once()
         assert audit_fn.call_args.kwargs["details"]["status"] == "unknown_tool"
@@ -531,7 +555,9 @@ class TestUntrustedWrapper:
         registry = {"bot_bridge": ("desc", malicious_handler)}
 
         await agent_loop(
-            gateway, _config(), [{"role": "user", "content": "test"}],
+            gateway,
+            _config(),
+            [{"role": "user", "content": "test"}],
             tool_registry=registry,
         )
         second_messages = gateway.calls[1]["messages"]
@@ -550,7 +576,9 @@ class TestUntrustedWrapper:
         registry = {"bot_bridge": ("desc", inject_handler)}
 
         await agent_loop(
-            gateway, _config(), [{"role": "user", "content": "test"}],
+            gateway,
+            _config(),
+            [{"role": "user", "content": "test"}],
             tool_registry=registry,
         )
         second_messages = gateway.calls[1]["messages"]
@@ -572,7 +600,9 @@ class TestIntegration:
         gateway = _StubGateway([_final_result("ok")])
 
         out = await agent_loop(
-            gateway, config, [{"role": "user", "content": "hi"}],
+            gateway,
+            config,
+            [{"role": "user", "content": "hi"}],
             tool_registry={},
         )
         assert out.text == "ok"
@@ -582,9 +612,7 @@ class TestIntegration:
     async def test_bridge_handler_http_error_graceful(self):
         """HTTP 调用失败时返回错误文本而非抛异常。"""
         endpoints = [_endpoint(url="https://invalid.example.test/api")]
-        result = await _bot_bridge_handler(
-            "测试端点", "hello", bridge_endpoints=endpoints
-        )
+        result = await _bot_bridge_handler("测试端点", "hello", bridge_endpoints=endpoints)
         assert "错误" in result or "失败" in result
 
     @pytest.mark.asyncio
@@ -600,7 +628,9 @@ class TestIntegration:
         registry = {"bot_bridge": ("desc", recording_handler)}
 
         out = await agent_loop(
-            gateway, _config(), [{"role": "user", "content": "问"}],
+            gateway,
+            _config(),
+            [{"role": "user", "content": "问"}],
             tool_registry=registry,
         )
         assert out.text == "最终"

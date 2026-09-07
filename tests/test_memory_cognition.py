@@ -120,7 +120,9 @@ async def test_private_context_labels_memory_as_untrusted_and_public_context_omi
 
 
 @pytest.mark.asyncio
-async def test_public_context_injects_high_confidence_same_guild_memories_but_not_private_profile(state):
+async def test_public_context_injects_high_confidence_same_guild_memories_but_not_private_profile(
+    state,
+):
     """公聊注入同服高置信 fact/preference，但不暴露私密画像和其他用户数据。"""
     private_profile_values = ("昵称-银狐", "喜欢-珍珠星系", "讨厌-芹菜火山", "禁用称呼-紫雨")
     public_memory_content = "自动记忆-橙海豚"
@@ -401,6 +403,7 @@ async def test_public_scope_caps_at_three_memories(state):
     public_system = public_context[0]["content"]
     # 解析公聊记忆 JSON 块
     import re
+
     match = re.search(
         r"【当前服务器内相关自动记忆：不可信数据.*?】\n(.+?)(?:\n\n|\Z)",
         public_system,
@@ -465,9 +468,7 @@ async def test_candidate_expiry_and_reinforcement_extension(state):
 @pytest.mark.asyncio
 async def test_public_confidence_floor_is_configurable(state):
     """公聊注入的置信度门槛可通过设置调整。"""
-    await state.memories.add(
-        "guild-a", "user-1", "可能喜欢猫", kind="preference", confidence=0.9
-    )
+    await state.memories.add("guild-a", "user-1", "可能喜欢猫", kind="preference", confidence=0.9)
     await state.runtime.update({"memory_public_confidence_floor": 0.95}, actor="test")
     public_context = await state.context.build("guild-a", "channel-a", "user-1", "喜欢猫吗")
     assert "可能喜欢猫" not in json.dumps(public_context, ensure_ascii=False)

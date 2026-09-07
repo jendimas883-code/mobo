@@ -11,8 +11,6 @@ from app.cognition import MoodService, PreferenceService, RelationshipService, c
 from app.database import Database, iso_now, utcnow
 from app.gate import score_gate
 
-_FLOW_COOLDOWN_MINUTES = 120
-
 
 class ChannelSettingsService:
     def __init__(self, database: Database):
@@ -148,13 +146,15 @@ class ProactiveService:
         utc_start: str,
         cooldown_minutes: int,
         daily_limit: int,
-        flow: bool = False,
+        kind_cooldown_minutes: int | None = None,
     ) -> str | None:
         """Atomically check and consume a channel slot before model generation.
 
-        When *flow* is True, an additional flow-specific cooldown is enforced
-        (last ``reason LIKE 'flow:%'`` must be older than ``_FLOW_COOLDOWN_MINUTES``).
-        A flow row still restarts the generic proactive cooldown window.
+        When *kind_cooldown_minutes* is set, an additional kind-specific cooldown
+        is enforced: the last ``reason LIKE 'flow:%'`` row must be older than
+        *kind_cooldown_minutes*.  A flow row still restarts the generic proactive
+        cooldown window.  Existing callers that do not pass this kwarg are
+        unaffected.
         """
 
         async with self.database.connect() as connection:
@@ -174,8 +174,8 @@ class ProactiveService:
                     if elapsed < cooldown_minutes:
                         await connection.rollback()
                         return "频道冷却中"
-                # Flow-specific cooldown: last flow:% row must be old enough.
-                if flow:
+                # Kind-specific cooldown: last flow:% row must be old enough.
+                if kind_cooldown_minutes is not None and kind_cooldown_minutes > 0:
                     cursor = await connection.execute(
                         """SELECT created_at FROM proactive_log
                            WHERE guild_id = ? AND channel_id = ?
@@ -186,10 +186,9 @@ class ProactiveService:
                     last_flow_row = await cursor.fetchone()
                     if last_flow_row is not None:
                         flow_elapsed = (
-                            now_utc
-                            - datetime.fromisoformat(str(last_flow_row["created_at"]))
+                            now_utc - datetime.fromisoformat(str(last_flow_row["created_at"]))
                         ).total_seconds() / 60
-                        if flow_elapsed < _FLOW_COOLDOWN_MINUTES:
+                        if flow_elapsed < kind_cooldown_minutes:
                             await connection.rollback()
                             return "心流冷却中"
                 cursor = await connection.execute(

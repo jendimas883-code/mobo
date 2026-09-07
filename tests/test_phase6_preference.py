@@ -4,12 +4,11 @@ familiarity-only observe、心情文风软指令。"""
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.cognition import Relationship
-
 
 # ═══════════════════════════════════════════════════════════════════════
 #  A1 — description 行为倾向措辞
@@ -75,7 +74,9 @@ class TestDescriptionMapping:
             "private-neutral",
         ],
     )
-    def test_description_tier(self, scope: str, tier: str, rel: Relationship, expected_keyword: str):
+    def test_description_tier(
+        self, scope: str, tier: str, rel: Relationship, expected_keyword: str
+    ):
         desc = rel.description
         assert expected_keyword in desc, (
             f"scope={scope} tier={tier}: expected '{expected_keyword}' in '{desc}'"
@@ -113,9 +114,7 @@ class TestDescriptionInPrompt:
                WHERE guild_id = ? AND user_id = ?""",
             ("guild-a", "user-1"),
         )
-        context = await state.context.build(
-            "guild-a", "channel-a", "user-1", "你好", public=public
-        )
+        context = await state.context.build("guild-a", "channel-a", "user-1", "你好", public=public)
         system = context[0]["content"]
         assert "聊天很顺" in system or "更愿意接" in system
 
@@ -234,9 +233,7 @@ class TestPreferenceTextRendering:
         await state.preferences.upsert("喜欢A", ["kw_a"], 0.9, locked=True)
         await state.preferences.upsert("喜欢B", ["kw_b"], 0.7, locked=True)
         await state.preferences.upsert("避开X", ["kw_x"], -0.4, locked=True)
-        context = await state.context.build(
-            "guild-a", "channel-a", "user-1", "你好", public=True
-        )
+        context = await state.context.build("guild-a", "channel-a", "user-1", "你好", public=True)
         system = context[0]["content"]
         # Both lines present
         assert "较偏好的话题" in system
@@ -254,13 +251,9 @@ class TestPreferenceTextRendering:
         await state.database.execute("DELETE FROM bot_preferences")
         # Seed 7 positive topics with distinct weights (ascending)
         for i in range(7):
-            await state.preferences.upsert(
-                f"话题{i}", [f"关键词{i}"], 0.6 + i * 0.03, locked=True
-            )
+            await state.preferences.upsert(f"话题{i}", [f"关键词{i}"], 0.6 + i * 0.03, locked=True)
         await state.preferences.upsert("避开话题", ["避开词"], -0.3, locked=True)
-        context = await state.context.build(
-            "guild-a", "channel-a", "user-1", "你好", public=True
-        )
+        context = await state.context.build("guild-a", "channel-a", "user-1", "你好", public=True)
         system = context[0]["content"]
         assert "较偏好的话题" in system
         # list(5) returns top 5 by weight DESC: 话题6(0.78), 话题5(0.75),
@@ -280,9 +273,7 @@ class TestPreferenceTextRendering:
     async def test_no_preferences_shows_default(self, state):
         """无偏好时显示默认文本。"""
         await state.database.execute("DELETE FROM bot_preferences")
-        context = await state.context.build(
-            "guild-a", "channel-a", "user-1", "你好", public=True
-        )
+        context = await state.context.build("guild-a", "channel-a", "user-1", "你好", public=True)
         system = context[0]["content"]
         assert "尚未形成明显偏好" in system
 
@@ -361,8 +352,11 @@ class TestDecayInteraction:
 
         with patch("app.cognition.utcnow", return_value=fixed_now):
             result = await state.relationships.observe(
-                "guild-a", "user-1", "谢谢",
-                learning_rate=0.1, decay_days=60,
+                "guild-a",
+                "user-1",
+                "谢谢",
+                learning_rate=0.1,
+                decay_days=60,
             )
 
         # With 60 days elapsed and decay_days=60, factor=0.5:
@@ -388,9 +382,7 @@ class TestMoodStyleLine:
     async def test_low_valence_shows_line_after_privacy_intent(self, state):
         """valence < -0.3 → 低落文风行，出现在 privacy 之后。"""
         await state.mood.set(-0.5, 0.5, 0.5)
-        context = await state.context.build(
-            "guild-a", "channel-a", "user-1", "你好", public=True
-        )
+        context = await state.context.build("guild-a", "channel-a", "user-1", "你好", public=True)
         system = context[0]["content"]
         # Style-specific text present (not just the mood label)
         assert "情绪有些低落" in system or "收敛" in system
@@ -405,9 +397,7 @@ class TestMoodStyleLine:
     async def test_high_energy_shows_line(self, state):
         """energy > 0.5 且 valence 不低 → 兴致行。"""
         await state.mood.set(0.1, 0.7, 0.5)
-        context = await state.context.build(
-            "guild-a", "channel-a", "user-1", "你好", public=True
-        )
+        context = await state.context.build("guild-a", "channel-a", "user-1", "你好", public=True)
         system = context[0]["content"]
         assert "兴致不错" in system or "活泼" in system
 
@@ -415,9 +405,7 @@ class TestMoodStyleLine:
     async def test_high_valence_shows_line(self, state):
         """valence > 0.5 且 energy 不高 → 心情好行。"""
         await state.mood.set(0.6, 0.3, 0.5)
-        context = await state.context.build(
-            "guild-a", "channel-a", "user-1", "你好", public=True
-        )
+        context = await state.context.build("guild-a", "channel-a", "user-1", "你好", public=True)
         system = context[0]["content"]
         assert "心情不错" in system or "放松" in system
 
@@ -425,9 +413,7 @@ class TestMoodStyleLine:
     async def test_neutral_mood_no_style_line(self, state):
         """中性情绪 → 无文风行。"""
         await state.mood.set(0.0, 0.3, 0.5)
-        context = await state.context.build(
-            "guild-a", "channel-a", "user-1", "你好", public=True
-        )
+        context = await state.context.build("guild-a", "channel-a", "user-1", "你好", public=True)
         system = context[0]["content"]
         assert "低落" not in system
         assert "活泼" not in system
@@ -446,9 +432,7 @@ class TestMoodStyleLine:
             },
             actor="test",
         )
-        context = await state.context.build(
-            "guild-a", "channel-a", "user-1", "你好", public=True
-        )
+        context = await state.context.build("guild-a", "channel-a", "user-1", "你好", public=True)
         system = context[0]["content"]
         # Baseline valence=-0.5 < -0.3 → style line should appear
         assert "情绪有些低落" in system or "收敛" in system
@@ -466,9 +450,7 @@ class TestMoodStyleLine:
             },
             actor="test",
         )
-        context = await state.context.build(
-            "guild-a", "channel-a", "user-1", "你好", public=True
-        )
+        context = await state.context.build("guild-a", "channel-a", "user-1", "你好", public=True)
         system = context[0]["content"]
         # Baseline neutral → no style line, despite DB mood being negative
         assert "低落" not in system
@@ -481,8 +463,13 @@ class TestMoodStyleLine:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _make_payload(*, direct: bool, relationship_enabled: bool = True,
-                  familiarity_only: bool = False, guild_id: str = "guild-a"):
+def _make_payload(
+    *,
+    direct: bool,
+    relationship_enabled: bool = True,
+    familiarity_only: bool = False,
+    guild_id: str = "guild-a",
+):
     """Build a minimal GenerationPayload-like object for _learn_after_success."""
     from app.discord_bot import GenerationPayload
 

@@ -858,7 +858,7 @@ SETTING_FIELDS: tuple[SettingField, ...] = (
         "工具桥",
         "textarea",
         "{}",
-        "JSON 对象，key 为服务器 ID，value 为 true/false。例：{\"123456\": true}",
+        'JSON 对象，key 为服务器 ID，value 为 true/false。例：{"123456": true}',
     ),
     SettingField(
         "bridge_endpoints",

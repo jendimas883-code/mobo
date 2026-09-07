@@ -17,11 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.discord_bot import (
-    _FLOW_CANDIDATE_FETCH,
-    _FLOW_CONTEXT_MESSAGES,
-    _FLOW_IDLE_MINUTES,
     _FLOW_MAX_TOKENS,
-    _FLOW_MIN_USER_MESSAGES,
     _FLOW_WINDOW_HOURS,
     MoboBot,
 )
@@ -77,8 +73,12 @@ async def _enable_channel(state, guild_id=GUILD_ID, channel_id=CHANNEL_ID) -> No
 
 
 async def _seed_user_messages(
-    state, count: int, *, newest_age_minutes: float = 30.0,
-    guild_id: str = GUILD_ID, channel_id: str = CHANNEL_ID,
+    state,
+    count: int,
+    *,
+    newest_age_minutes: float = 30.0,
+    guild_id: str = GUILD_ID,
+    channel_id: str = CHANNEL_ID,
 ) -> None:
     now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     for i in range(count):
@@ -354,8 +354,15 @@ class TestFlowEligibility:
                 """INSERT INTO messages
                    (guild_id, channel_id, user_id, username, role, content, created_at, expires_at)
                    VALUES(?, ?, ?, ?, 'user', ?, ?, ?)""",
-                (GUILD_ID, CHANNEL_ID, f"100000000000{i:04d}", f"用户{i}",
-                 f"消息 {i}: 聊天", _iso(created), expired),
+                (
+                    GUILD_ID,
+                    CHANNEL_ID,
+                    f"100000000000{i:04d}",
+                    f"用户{i}",
+                    f"消息 {i}: 聊天",
+                    _iso(created),
+                    expired,
+                ),
             )
         bot = _make_bot(state)
         config = await state.runtime.all()
@@ -376,8 +383,14 @@ class TestFlowEligibility:
                 """INSERT INTO messages
                    (guild_id, channel_id, user_id, username, role, content, created_at)
                    VALUES(?, ?, ?, ?, 'user', ?, ?)""",
-                (GUILD_ID, CHANNEL_ID, f"100000000000{i:04d}", f"用户{i}",
-                 f"消息 {i}: 聊天", _iso(created)),
+                (
+                    GUILD_ID,
+                    CHANNEL_ID,
+                    f"100000000000{i:04d}",
+                    f"用户{i}",
+                    f"消息 {i}: 聊天",
+                    _iso(created),
+                ),
             )
         bot = _make_bot(state)
         config = await state.runtime.all()
@@ -441,24 +454,32 @@ class TestFlowReservation:
         await state.runtime.update({"proactive_daily_limit": 1}, actor="test")
         await _enable_channel(state)
         await _seed_user_messages(state, 12)
-        bot = _make_bot(state)
 
         now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
         utc_start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC).isoformat()
 
         # Reserve one flow slot (should succeed)
         denied = await state.proactive._reserve_channel_slot(
-            GUILD_ID, CHANNEL_ID, "flow:测试",
-            now_utc=now, utc_start=utc_start,
-            cooldown_minutes=1, daily_limit=1, flow=True,
+            GUILD_ID,
+            CHANNEL_ID,
+            "flow:测试",
+            now_utc=now,
+            utc_start=utc_start,
+            cooldown_minutes=1,
+            daily_limit=1,
+            kind_cooldown_minutes=120,
         )
         assert denied is None
 
         # Now try a normal proactive slot (past generic cooldown, but daily limit hit)
         denied2 = await state.proactive._reserve_channel_slot(
-            GUILD_ID, CHANNEL_ID, "自然参与",
-            now_utc=now + timedelta(minutes=2), utc_start=utc_start,
-            cooldown_minutes=1, daily_limit=1,
+            GUILD_ID,
+            CHANNEL_ID,
+            "自然参与",
+            now_utc=now + timedelta(minutes=2),
+            utc_start=utc_start,
+            cooldown_minutes=1,
+            daily_limit=1,
         )
         assert denied2 == "今日额度已用完"
 
@@ -474,16 +495,25 @@ class TestFlowReservation:
 
         # Consume the daily limit with a normal proactive entry
         await state.proactive._reserve_channel_slot(
-            GUILD_ID, CHANNEL_ID, "自然参与",
-            now_utc=now, utc_start=utc_start,
-            cooldown_minutes=1, daily_limit=1,
+            GUILD_ID,
+            CHANNEL_ID,
+            "自然参与",
+            now_utc=now,
+            utc_start=utc_start,
+            cooldown_minutes=1,
+            daily_limit=1,
         )
 
         # Flow should be denied by daily limit (past generic cooldown)
         denied = await state.proactive._reserve_channel_slot(
-            GUILD_ID, CHANNEL_ID, "flow:测试",
-            now_utc=now + timedelta(minutes=2), utc_start=utc_start,
-            cooldown_minutes=1, daily_limit=1, flow=True,
+            GUILD_ID,
+            CHANNEL_ID,
+            "flow:测试",
+            now_utc=now + timedelta(minutes=2),
+            utc_start=utc_start,
+            cooldown_minutes=1,
+            daily_limit=1,
+            kind_cooldown_minutes=120,
         )
         assert denied == "今日额度已用完"
 
@@ -498,25 +528,40 @@ class TestFlowReservation:
 
         # First flow succeeds
         denied1 = await state.proactive._reserve_channel_slot(
-            GUILD_ID, CHANNEL_ID, "flow:话题A",
-            now_utc=now, utc_start=utc_start,
-            cooldown_minutes=5, daily_limit=10, flow=True,
+            GUILD_ID,
+            CHANNEL_ID,
+            "flow:话题A",
+            now_utc=now,
+            utc_start=utc_start,
+            cooldown_minutes=5,
+            daily_limit=10,
+            kind_cooldown_minutes=120,
         )
         assert denied1 is None
 
         # Second flow 60 minutes later → blocked by flow cooldown (120min)
         denied2 = await state.proactive._reserve_channel_slot(
-            GUILD_ID, CHANNEL_ID, "flow:话题B",
-            now_utc=now + timedelta(minutes=60), utc_start=utc_start,
-            cooldown_minutes=5, daily_limit=10, flow=True,
+            GUILD_ID,
+            CHANNEL_ID,
+            "flow:话题B",
+            now_utc=now + timedelta(minutes=60),
+            utc_start=utc_start,
+            cooldown_minutes=5,
+            daily_limit=10,
+            kind_cooldown_minutes=120,
         )
         assert denied2 == "心流冷却中"
 
         # Third flow 121 minutes later → passes flow cooldown
         denied3 = await state.proactive._reserve_channel_slot(
-            GUILD_ID, CHANNEL_ID, "flow:话题C",
-            now_utc=now + timedelta(minutes=121), utc_start=utc_start,
-            cooldown_minutes=5, daily_limit=10, flow=True,
+            GUILD_ID,
+            CHANNEL_ID,
+            "flow:话题C",
+            now_utc=now + timedelta(minutes=121),
+            utc_start=utc_start,
+            cooldown_minutes=5,
+            daily_limit=10,
+            kind_cooldown_minutes=120,
         )
         assert denied3 is None
 
@@ -531,16 +576,25 @@ class TestFlowReservation:
 
         # First proactive entry
         await state.proactive._reserve_channel_slot(
-            GUILD_ID, CHANNEL_ID, "自然参与",
-            now_utc=now, utc_start=utc_start,
-            cooldown_minutes=45, daily_limit=10,
+            GUILD_ID,
+            CHANNEL_ID,
+            "自然参与",
+            now_utc=now,
+            utc_start=utc_start,
+            cooldown_minutes=45,
+            daily_limit=10,
         )
 
         # Flow 10 minutes later → blocked by generic cooldown
         denied = await state.proactive._reserve_channel_slot(
-            GUILD_ID, CHANNEL_ID, "flow:话题",
-            now_utc=now + timedelta(minutes=10), utc_start=utc_start,
-            cooldown_minutes=45, daily_limit=10, flow=True,
+            GUILD_ID,
+            CHANNEL_ID,
+            "flow:话题",
+            now_utc=now + timedelta(minutes=10),
+            utc_start=utc_start,
+            cooldown_minutes=45,
+            daily_limit=10,
+            kind_cooldown_minutes=120,
         )
         assert denied == "频道冷却中"
 
@@ -555,16 +609,25 @@ class TestFlowReservation:
 
         # Flow succeeds
         await state.proactive._reserve_channel_slot(
-            GUILD_ID, CHANNEL_ID, "flow:话题",
-            now_utc=now, utc_start=utc_start,
-            cooldown_minutes=45, daily_limit=10, flow=True,
+            GUILD_ID,
+            CHANNEL_ID,
+            "flow:话题",
+            now_utc=now,
+            utc_start=utc_start,
+            cooldown_minutes=45,
+            daily_limit=10,
+            kind_cooldown_minutes=120,
         )
 
         # Normal proactive 10 minutes later → blocked by generic cooldown
         denied = await state.proactive._reserve_channel_slot(
-            GUILD_ID, CHANNEL_ID, "自然参与",
-            now_utc=now + timedelta(minutes=10), utc_start=utc_start,
-            cooldown_minutes=45, daily_limit=10,
+            GUILD_ID,
+            CHANNEL_ID,
+            "自然参与",
+            now_utc=now + timedelta(minutes=10),
+            utc_start=utc_start,
+            cooldown_minutes=45,
+            daily_limit=10,
         )
         assert denied == "频道冷却中"
 
@@ -579,18 +642,28 @@ class TestFlowReservation:
 
         # Reserve slot (simulating before-generation reservation)
         denied = await state.proactive._reserve_channel_slot(
-            GUILD_ID, CHANNEL_ID, "flow:待定",
-            now_utc=now, utc_start=utc_start,
-            cooldown_minutes=1, daily_limit=10, flow=True,
+            GUILD_ID,
+            CHANNEL_ID,
+            "flow:待定",
+            now_utc=now,
+            utc_start=utc_start,
+            cooldown_minutes=1,
+            daily_limit=10,
+            kind_cooldown_minutes=120,
         )
         assert denied is None
 
         # Slot is consumed — another flow within 120min should be refused
         # Must be past generic cooldown but within flow cooldown
         denied2 = await state.proactive._reserve_channel_slot(
-            GUILD_ID, CHANNEL_ID, "flow:话题B",
-            now_utc=now + timedelta(minutes=2), utc_start=utc_start,
-            cooldown_minutes=1, daily_limit=10, flow=True,
+            GUILD_ID,
+            CHANNEL_ID,
+            "flow:话题B",
+            now_utc=now + timedelta(minutes=2),
+            utc_start=utc_start,
+            cooldown_minutes=1,
+            daily_limit=10,
+            kind_cooldown_minutes=120,
         )
         assert denied2 == "心流冷却中"
 
@@ -622,13 +695,20 @@ class TestFlowTopicGeneration:
 
         # Reserve slot first (as _flow_tick does)
         await state.proactive._reserve_channel_slot(
-            GUILD_ID, CHANNEL_ID, "flow:待定",
-            now_utc=now, utc_start=utc_start,
-            cooldown_minutes=5, daily_limit=10, flow=True,
+            GUILD_ID,
+            CHANNEL_ID,
+            "flow:待定",
+            now_utc=now,
+            utc_start=utc_start,
+            cooldown_minutes=5,
+            daily_limit=10,
+            kind_cooldown_minutes=120,
         )
 
         # Call _generate_flow_topic
-        result = await bot._generate_flow_topic(GUILD_ID, CHANNEL_ID, await state.runtime.all(), now)
+        result = await bot._generate_flow_topic(
+            GUILD_ID, CHANNEL_ID, await state.runtime.all(), now
+        )
         assert result is None  # Discarded
 
     @pytest.mark.asyncio
@@ -656,7 +736,9 @@ class TestFlowTopicGeneration:
             return_value=_valid_llm_result(hook, "Python 确实是很有趣的语言，大家最近在学什么？")
         )
 
-        result = await bot._generate_flow_topic(GUILD_ID, CHANNEL_ID, await state.runtime.all(), now)
+        result = await bot._generate_flow_topic(
+            GUILD_ID, CHANNEL_ID, await state.runtime.all(), now
+        )
         assert result is not None
         assert result[0] == hook
         assert "Python" in result[1]
@@ -671,7 +753,9 @@ class TestFlowTopicGeneration:
 
         state.llm.complete = AsyncMock(return_value=_model_result("这不是JSON"))
 
-        result = await bot._generate_flow_topic(GUILD_ID, CHANNEL_ID, await state.runtime.all(), now)
+        result = await bot._generate_flow_topic(
+            GUILD_ID, CHANNEL_ID, await state.runtime.all(), now
+        )
         assert result is None
 
     @pytest.mark.asyncio
@@ -687,7 +771,9 @@ class TestFlowTopicGeneration:
             return_value=_model_result(json.dumps({"hook": "some hook"}))
         )
 
-        result = await bot._generate_flow_topic(GUILD_ID, CHANNEL_ID, await state.runtime.all(), now)
+        result = await bot._generate_flow_topic(
+            GUILD_ID, CHANNEL_ID, await state.runtime.all(), now
+        )
         assert result is None
 
     @pytest.mark.asyncio
@@ -702,7 +788,9 @@ class TestFlowTopicGeneration:
             return_value=_model_result(json.dumps({"hook": "some hook", "text": ""}))
         )
 
-        result = await bot._generate_flow_topic(GUILD_ID, CHANNEL_ID, await state.runtime.all(), now)
+        result = await bot._generate_flow_topic(
+            GUILD_ID, CHANNEL_ID, await state.runtime.all(), now
+        )
         assert result is None
 
     @pytest.mark.asyncio
@@ -726,7 +814,9 @@ class TestFlowTopicGeneration:
         fenced = f"```json\n{json.dumps({'hook': hook, 'text': '有人最近看了好电影吗？'})}\n```"
         state.llm.complete = AsyncMock(return_value=_model_result(fenced))
 
-        result = await bot._generate_flow_topic(GUILD_ID, CHANNEL_ID, await state.runtime.all(), now)
+        result = await bot._generate_flow_topic(
+            GUILD_ID, CHANNEL_ID, await state.runtime.all(), now
+        )
         assert result is not None
         assert result[0] == hook
 
@@ -748,11 +838,11 @@ class TestFlowTopicGeneration:
         bot = _make_bot(state)
 
         text_81 = "x" * 81
-        state.llm.complete = AsyncMock(
-            return_value=_valid_llm_result("讨论编程", text_81)
-        )
+        state.llm.complete = AsyncMock(return_value=_valid_llm_result("讨论编程", text_81))
 
-        result = await bot._generate_flow_topic(GUILD_ID, CHANNEL_ID, await state.runtime.all(), now)
+        result = await bot._generate_flow_topic(
+            GUILD_ID, CHANNEL_ID, await state.runtime.all(), now
+        )
         assert result is None
 
     @pytest.mark.asyncio
@@ -838,8 +928,12 @@ class TestRecentTopicsInjection:
             await state.database.execute(
                 """INSERT INTO proactive_log (guild_id, channel_id, reason, created_at)
                    VALUES (?, ?, ?, ?)""",
-                (GUILD_ID, CHANNEL_ID, f"flow:话题：{topic}",
-                 (now - timedelta(hours=idx)).isoformat()),
+                (
+                    GUILD_ID,
+                    CHANNEL_ID,
+                    f"flow:话题：{topic}",
+                    (now - timedelta(hours=idx)).isoformat(),
+                ),
             )
 
         bot = _make_bot(state)
@@ -915,8 +1009,12 @@ class TestRecentTopicsInjection:
             await state.database.execute(
                 """INSERT INTO proactive_log (guild_id, channel_id, reason, created_at)
                    VALUES (?, ?, ?, ?)""",
-                (GUILD_ID, other_channel_id, f"flow:话题：{topic}",
-                 (now - timedelta(hours=idx)).isoformat()),
+                (
+                    GUILD_ID,
+                    other_channel_id,
+                    f"flow:话题：{topic}",
+                    (now - timedelta(hours=idx)).isoformat(),
+                ),
             )
 
         bot = _make_bot(state)
@@ -1103,7 +1201,6 @@ class TestFlowPersistence:
         await _base_config(state)
         await _enable_channel(state)
         now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
-        utc_start = datetime(2026, 1, 1, 0, 0, tzinfo=UTC).isoformat()
 
         # Seed user messages
         for i in range(12):
@@ -1183,7 +1280,6 @@ class TestFlowPersistence:
         )
         bot.get_channel = MagicMock(return_value=channel)
 
-        original_remember = bot._remember_bot_message
         remember_calls: list[tuple] = []
         bot._remember_bot_message = lambda *args: remember_calls.append(args)
 
@@ -1225,9 +1321,7 @@ class TestFlowSafetyOrdering:
 
         hook = "讨论天气和风景"
         text_val = "今天天气真好，适合出去走走！"
-        state.llm.complete = AsyncMock(
-            return_value=_valid_llm_result(hook, text_val)
-        )
+        state.llm.complete = AsyncMock(return_value=_valid_llm_result(hook, text_val))
         safety_calls: list[str] = []
 
         async def track_safety(text, **kwargs):
@@ -1301,10 +1395,12 @@ class TestFlowLoopResilience:
         bot = _make_bot(state)
 
         # Make _flow_tick raise
-        with patch.object(bot, "_flow_tick", side_effect=RuntimeError("boom")):
-            with caplog.at_level(logging.ERROR, logger="mobo.discord"):
-                # flow() calls _flow_tick inside try/except
-                await bot.flow()
+        with (
+            patch.object(bot, "_flow_tick", side_effect=RuntimeError("boom")),
+            caplog.at_level(logging.ERROR, logger="mobo.discord"),
+        ):
+            # flow() calls _flow_tick inside try/except
+            await bot.flow()
 
         assert any("flow tick failed" in r.message for r in caplog.records)
 
@@ -1432,9 +1528,14 @@ class TestFlowBookkeeping:
 
         # Reserve with placeholder
         await state.proactive._reserve_channel_slot(
-            GUILD_ID, CHANNEL_ID, "flow:待定",
-            now_utc=now, utc_start=utc_start,
-            cooldown_minutes=5, daily_limit=10, flow=True,
+            GUILD_ID,
+            CHANNEL_ID,
+            "flow:待定",
+            now_utc=now,
+            utc_start=utc_start,
+            cooldown_minutes=5,
+            daily_limit=10,
+            kind_cooldown_minutes=120,
         )
 
         # Update reason
@@ -1537,9 +1638,7 @@ class TestFlowCoverage:
         def get_channel(cid):
             return {int(ch1_id): ch1, int(ch2_id): ch2}.get(cid)
 
-        state.llm.complete = AsyncMock(
-            return_value=_valid_llm_result("讨论话题", "大家在聊什么？")
-        )
+        state.llm.complete = AsyncMock(return_value=_valid_llm_result("讨论话题", "大家在聊什么？"))
         state.safety.check_output = AsyncMock(
             return_value=SimpleNamespace(allowed=True, text="大家在聊什么？")
         )
@@ -1576,10 +1675,15 @@ class TestFlowCoverage:
                (guild_id, user_id, topic, public_safe, status, followup_after,
                 expires_at, followup_count, created_at, updated_at)
                VALUES(?, ?, ?, 1, 'open', ?, ?, 0, ?, ?)""",
-            (GUILD_ID, USER_ID, "上次聊到的电影推荐",
-             (now - timedelta(minutes=5)).isoformat(),
-             (now + timedelta(days=7)).isoformat(),
-             now.isoformat(), now.isoformat()),
+            (
+                GUILD_ID,
+                USER_ID,
+                "上次聊到的电影推荐",
+                (now - timedelta(minutes=5)).isoformat(),
+                (now + timedelta(days=7)).isoformat(),
+                now.isoformat(),
+                now.isoformat(),
+            ),
         )
 
         bot = _make_bot(state)
@@ -1620,9 +1724,7 @@ class TestFlowCoverage:
         channel = _fake_channel()
 
         # LLM returns fabricated hook → discarded
-        state.llm.complete = AsyncMock(
-            return_value=_valid_llm_result("不存在的hook", "大家好")
-        )
+        state.llm.complete = AsyncMock(return_value=_valid_llm_result("不存在的hook", "大家好"))
         bot.get_channel = MagicMock(return_value=channel)
 
         with patch("app.discord_bot.utcnow", return_value=now):
@@ -1659,16 +1761,14 @@ class TestPurgeFlowSideChannels:
                 """INSERT INTO messages
                    (guild_id, channel_id, user_id, username, role, content, created_at)
                    VALUES(?, ?, ?, ?, 'user', ?, ?)""",
-                (GUILD_ID, CHANNEL_ID, user_id, "用户",
-                 f"消息 {i}: 编程话题", _iso(created)),
+                (GUILD_ID, CHANNEL_ID, user_id, "用户", f"消息 {i}: 编程话题", _iso(created)),
             )
 
         # Seed a flow proactive_log row in the same guild
         await state.database.execute(
             """INSERT INTO proactive_log (guild_id, channel_id, reason, created_at)
                VALUES (?, ?, ?, ?)""",
-            (GUILD_ID, CHANNEL_ID, "flow:话题：Python编程",
-             (now - timedelta(hours=1)).isoformat()),
+            (GUILD_ID, CHANNEL_ID, "flow:话题：Python编程", (now - timedelta(hours=1)).isoformat()),
         )
 
         # Seed an unattributed safety_event (flow path: user_id="")
@@ -1707,9 +1807,7 @@ class TestPurgeFlowSideChannels:
 
         # Unattributed safety_event gone
         assert (
-            await state.database.scalar(
-                "SELECT COUNT(*) FROM safety_events WHERE user_id = ''"
-            )
+            await state.database.scalar("SELECT COUNT(*) FROM safety_events WHERE user_id = ''")
             == 0
         )
 
@@ -1741,8 +1839,12 @@ class TestPurgeFlowSideChannels:
         await state.database.execute(
             """INSERT INTO proactive_log (guild_id, channel_id, reason, created_at)
                VALUES (?, ?, ?, ?)""",
-            (other_guild, CHANNEL_ID, "flow:话题：不该被删",
-             (now - timedelta(hours=1)).isoformat()),
+            (
+                other_guild,
+                CHANNEL_ID,
+                "flow:话题：不该被删",
+                (now - timedelta(hours=1)).isoformat(),
+            ),
         )
 
         await state.database.purge_user(user_id)
@@ -1794,9 +1896,7 @@ class TestFlowSafetyAttribution:
 
         hook = "讨论天气和风景"
         text_val = "今天天气真好，适合出去看风景！"
-        state.llm.complete = AsyncMock(
-            return_value=_valid_llm_result(hook, text_val)
-        )
+        state.llm.complete = AsyncMock(return_value=_valid_llm_result(hook, text_val))
         bot.get_channel = MagicMock(return_value=channel)
 
         with patch("app.discord_bot.utcnow", return_value=now):

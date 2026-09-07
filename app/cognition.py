@@ -216,10 +216,11 @@ class PreferenceService:
         )
         for row in neg_rows:
             row["keywords"] = json.loads(row.pop("keywords_json"))
-            if row["id"] not in seen_ids:
-                if any(keyword.lower() in lowered for keyword in row["keywords"]):
-                    matched.append(row)
-                    seen_ids.add(row["id"])
+            if row["id"] not in seen_ids and any(
+                keyword.lower() in lowered for keyword in row["keywords"]
+            ):
+                matched.append(row)
+                seen_ids.add(row["id"])
         if not matched:
             return 0.0, []
         if learn:

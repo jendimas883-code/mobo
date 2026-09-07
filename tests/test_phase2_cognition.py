@@ -2,35 +2,32 @@
 
 from __future__ import annotations
 
-import asyncio
 import random
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import pytest
 
 from app.gate import (
-    SCORE_NAME_MENTION,
-    PRESSURE_MAX_SCORE,
     PRESENCE_PENALTY_MAX,
+    PRESSURE_MAX_SCORE,
+    SCORE_NAME_MENTION,
     _score_content,
-    _score_pressure,
     _score_presence_penalty,
-    _has_name_mention,
+    _score_pressure,
     score_gate,
 )
 from app.humanize import (
-    _split_sentences,
-    _hard_split,
-    _merge_to_max,
-    _find_immunity_zones,
-    _inject_typo_safe,
     _create_typo_sentence,
+    _find_immunity_zones,
+    _hard_split,
+    _inject_typo_safe,
+    _merge_to_max,
+    _split_sentences,
     fragments,
     typing_delay,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════════
 #  Task 1 — 闸门单元测试
@@ -379,7 +376,9 @@ class TestReactions:
     async def test_score_in_range_triggers_reaction(self, state):
         """闸门分数在 [min, threshold) 区间且概率命中时触发反应。"""
         from tests.test_discord_pipeline_v4 import (
-            FakeChannel, FakeMessage, FakeUser, _ready_bot,
+            FakeMessage,
+            FakeUser,
+            _ready_bot,
         )
 
         bot, bot_user, channel = await _ready_bot(state)
@@ -409,7 +408,9 @@ class TestReactions:
     @pytest.mark.asyncio
     async def test_score_below_range_no_reaction(self, state):
         from tests.test_discord_pipeline_v4 import (
-            FakeChannel, FakeMessage, FakeUser, _ready_bot,
+            FakeMessage,
+            FakeUser,
+            _ready_bot,
         )
 
         bot, bot_user, channel = await _ready_bot(state)
@@ -432,10 +433,11 @@ class TestReactions:
 
     @pytest.mark.asyncio
     async def test_cooldown_blocks_second_reaction(self, state):
-        import time as _time
 
         from tests.test_discord_pipeline_v4 import (
-            FakeChannel, FakeMessage, FakeUser, _ready_bot,
+            FakeMessage,
+            FakeUser,
+            _ready_bot,
         )
 
         bot, bot_user, channel = await _ready_bot(state)
@@ -466,7 +468,9 @@ class TestReactions:
     @pytest.mark.asyncio
     async def test_bot_message_never_reacted(self, state):
         from tests.test_discord_pipeline_v4 import (
-            FakeChannel, FakeMessage, FakeUser, _ready_bot,
+            FakeMessage,
+            FakeUser,
+            _ready_bot,
         )
 
         bot, bot_user, channel = await _ready_bot(state)
@@ -490,7 +494,9 @@ class TestReactions:
     @pytest.mark.asyncio
     async def test_reaction_disabled_no_reaction(self, state):
         from tests.test_discord_pipeline_v4 import (
-            FakeChannel, FakeMessage, FakeUser, _ready_bot,
+            FakeMessage,
+            FakeUser,
+            _ready_bot,
         )
 
         bot, bot_user, channel = await _ready_bot(state)
@@ -515,7 +521,9 @@ class TestReactions:
     async def test_reply_path_never_reacts(self, state):
         """进入回复路径的消息不会触发反应（由调用方保证互斥）。"""
         from tests.test_discord_pipeline_v4 import (
-            FakeChannel, FakeMessage, FakeUser, _ready_bot,
+            FakeMessage,
+            FakeUser,
+            _ready_bot,
         )
 
         bot, bot_user, channel = await _ready_bot(state)
@@ -540,13 +548,19 @@ class TestReactions:
         # 让 decide 返回 should_speak=True（直接用 @mention 路径）
         state.llm.complete = AsyncMock(
             return_value=SimpleNamespace(
-                text="回复", input_tokens=10, output_tokens=3,
-                latency_ms=12.0, provider="fake", model="fake-model",
+                text="回复",
+                input_tokens=10,
+                output_tokens=3,
+                latency_ms=12.0,
+                provider="fake",
+                model="fake-model",
             )
         )
         user = FakeUser(111111111111111)
         message = FakeMessage(
-            906, user, channel,
+            906,
+            user,
+            channel,
             f"<@{bot_user.id}> 你好",
             mentions=[bot_user],
         )
@@ -565,8 +579,11 @@ class TestPromptBlocks:
     async def test_public_prompt_contains_attention_guide(self, state):
         """公聊系统提示词包含群聊注意力引导。"""
         context = await state.context.build(
-            "333333333333333", "444444444444444", "111111111111111",
-            "测试消息", public=True,
+            "333333333333333",
+            "444444444444444",
+            "111111111111111",
+            "测试消息",
+            public=True,
         )
         system_text = context[0]["content"]
         assert "群聊注意力引导" in system_text
@@ -576,8 +593,11 @@ class TestPromptBlocks:
     async def test_public_prompt_contains_activity_rule(self, state):
         """公聊系统提示词包含闲置/活跃规则。"""
         context = await state.context.build(
-            "333333333333333", "444444444444444", "111111111111111",
-            "测试消息", public=True,
+            "333333333333333",
+            "444444444444444",
+            "111111111111111",
+            "测试消息",
+            public=True,
         )
         system_text = context[0]["content"]
         assert "闲置与活跃规则" in system_text
@@ -587,8 +607,11 @@ class TestPromptBlocks:
     async def test_private_prompt_also_contains_blocks(self, state):
         """私聊系统提示词也包含两个新区块。"""
         context = await state.context.build(
-            "333333333333333", "444444444444444", "111111111111111",
-            "测试消息", public=False,
+            "333333333333333",
+            "444444444444444",
+            "111111111111111",
+            "测试消息",
+            public=False,
         )
         system_text = context[0]["content"]
         assert "群聊注意力引导" in system_text
@@ -623,8 +646,12 @@ class TestGateIntegration:
         config = await state.runtime.all()
         now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
         decision = await state.proactive.decide(
-            "333333333333333", "444444444444444", "111111111111111",
-            "mobo 你好，帮我看看这个", config, now=now,
+            "333333333333333",
+            "444444444444444",
+            "111111111111111",
+            "mobo 你好，帮我看看这个",
+            config,
+            now=now,
         )
         assert hasattr(decision, "score")
         assert decision.score >= SCORE_NAME_MENTION  # "mobo" in text
@@ -654,8 +681,12 @@ class TestGateIntegration:
         now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
         # 包含 bot 名字的文本 → 闸门 ≥ 80 → 触发
         decision = await state.proactive.decide(
-            "333333333333333", "444444444444444", "111111111111111",
-            "mobo 帮我看看这个怎么解决？", config, now=now,
+            "333333333333333",
+            "444444444444444",
+            "111111111111111",
+            "mobo 帮我看看这个怎么解决？",
+            config,
+            now=now,
         )
         assert decision.should_speak is True
         assert "闸门" in decision.reason

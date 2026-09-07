@@ -227,14 +227,16 @@ class OpenAICompatibleBackend(LLMBackend):
             parsed = []
             for tc in raw_tool_calls:
                 func = getattr(tc, "function", None)
-                parsed.append({
-                    "id": str(getattr(tc, "id", "")),
-                    "type": str(getattr(tc, "type", "function")),
-                    "function": {
-                        "name": str(getattr(func, "name", "") if func else ""),
-                        "arguments": str(getattr(func, "arguments", "") if func else ""),
-                    },
-                })
+                parsed.append(
+                    {
+                        "id": str(getattr(tc, "id", "")),
+                        "type": str(getattr(tc, "type", "function")),
+                        "function": {
+                            "name": str(getattr(func, "name", "") if func else ""),
+                            "arguments": str(getattr(func, "arguments", "") if func else ""),
+                        },
+                    }
+                )
             parsed_tool_calls = tuple(parsed)
         usage = getattr(response, "usage", None)
         input_tokens = _usage_value(usage, "prompt_tokens", "input_tokens")
@@ -374,9 +376,7 @@ class ModelGateway:
         role: ModelRole = "chat",
         tools: list[dict[str, Any]] | None = None,
     ) -> ModelResult:
-        return await self.build_backend(config, role=role).complete_result(
-            messages, tools=tools
-        )
+        return await self.build_backend(config, role=role).complete_result(messages, tools=tools)
 
     async def stream(
         self,

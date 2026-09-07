@@ -6,9 +6,8 @@
 
 from __future__ import annotations
 
-import re
+from collections.abc import Sequence
 from math import log1p
-from typing import Sequence
 
 # ── 常量（与 MaiBot 口径对齐，仅暴露阈值为配置项）───────────────────
 SCORE_NAME_MENTION = 80
@@ -52,10 +51,11 @@ def _score_content(texts: Sequence[str]) -> tuple[int, list[str]]:
     reasons: list[str] = []
 
     # 疑问
-    if any("？" in t or "?" in t for t in texts):
-        if any(term in combined for term in QUESTION_TERMS):
-            score += SCORE_CONTENT_QUESTION
-            reasons.append("问题")
+    if any("？" in t or "?" in t for t in texts) and any(
+        term in combined for term in QUESTION_TERMS
+    ):
+        score += SCORE_CONTENT_QUESTION
+        reasons.append("问题")
 
     # 请求
     request_hits = [term for term in REQUEST_TERMS if term in combined]

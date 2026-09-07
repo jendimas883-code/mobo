@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -35,6 +36,7 @@ _DOT_PATH_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 
 # ── 工具定义 ─────────────────────────────────────────────────────────────
 
+
 async def _bot_bridge_handler(
     name: str,
     user_input: str,
@@ -54,9 +56,11 @@ async def _bot_bridge_handler(
     if endpoint is None:
         error_msg = f"错误：未找到名为 {name!r} 的桥接端点"
         if audit_fn is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await audit_fn(
-                    actor=actor, action="tool_call", target=name,
+                    actor=actor,
+                    action="tool_call",
+                    target=name,
                     details={
                         "bridge": name,
                         "round": (round_state or {}).get("round", 0),
@@ -64,17 +68,17 @@ async def _bot_bridge_handler(
                         "preview": error_msg,
                     },
                 )
-            except Exception:
-                pass
         return error_msg
 
     # 拒绝用户输入中的花括号，防止模板注入
     if "{" in user_input or "}" in user_input:
         error_msg = "错误：输入包含非法字符（花括号），已拒绝"
         if audit_fn is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await audit_fn(
-                    actor=actor, action="tool_call", target=name,
+                    actor=actor,
+                    action="tool_call",
+                    target=name,
                     details={
                         "bridge": name,
                         "round": (round_state or {}).get("round", 0),
@@ -82,8 +86,6 @@ async def _bot_bridge_handler(
                         "preview": error_msg,
                     },
                 )
-            except Exception:
-                pass
         return error_msg
 
     url = str(endpoint.get("url", ""))
@@ -135,9 +137,7 @@ async def _bot_bridge_handler(
     return response_text
 
 
-def _find_endpoint(
-    name: str, endpoints: list[dict[str, Any]]
-) -> dict[str, Any] | None:
+def _find_endpoint(name: str, endpoints: list[dict[str, Any]]) -> dict[str, Any] | None:
     """按名称查找端点配置。"""
     for ep in endpoints:
         if str(ep.get("名称", ep.get("name", ""))) == name:
@@ -145,9 +145,7 @@ def _find_endpoint(
     return None
 
 
-def _http_call(
-    url: str, method: str, body: str, auth_header: str, timeout: float
-) -> str:
+def _http_call(url: str, method: str, body: str, auth_header: str, timeout: float) -> str:
     """同步 HTTP 调用（在线程中运行）。"""
     headers: dict[str, str] = {"Content-Type": "application/json"}
     if auth_header:
@@ -182,6 +180,7 @@ def _extract_field(dot_path: str, raw_json: str) -> str:
 
 
 # ── 工具注册表 ───────────────────────────────────────────────────────────
+
 
 def build_tools(
     bridge_endpoints: list[dict[str, Any]],
@@ -230,31 +229,34 @@ def build_openai_tools(
     """将工具注册表转为 OpenAI tools 格式。"""
     tools: list[dict[str, Any]] = []
     for name, (description, _handler) in tool_registry.items():
-        tools.append({
-            "type": "function",
-            "function": {
-                "name": name,
-                "description": description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": "桥接端点名称",
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "桥接端点名称",
+                            },
+                            "input": {
+                                "type": "string",
+                                "description": "要发送给端点的内容",
+                            },
                         },
-                        "input": {
-                            "type": "string",
-                            "description": "要发送给端点的内容",
-                        },
+                        "required": ["name", "input"],
                     },
-                    "required": ["name", "input"],
                 },
-            },
-        })
+            }
+        )
     return tools
 
 
 # ── 有界 agent 循环 ─────────────────────────────────────────────────────
+
 
 async def agent_loop(
     gateway: ModelGateway,
@@ -379,11 +381,13 @@ async def agent_loop(
             # 包裹为不可信数据
             wrapped_output = f"{_UNTRUSTED_PREFIX}\n{tool_output}"
 
-            context.append({
-                "role": "tool",
-                "tool_call_id": tc["id"],
-                "content": wrapped_output,
-            })
+            context.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": wrapped_output,
+                }
+            )
 
     if final_result is None:
         # 所有轮次用尽或超时：合成空结果（调用方按普通空回复兜底）

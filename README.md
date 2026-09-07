@@ -180,7 +180,11 @@ pip install -r requirements-dev.txt
 python -m ruff check .
 python -m ruff format --check .
 python -m pytest
+python scripts/flowtest.py
+python scripts/edgetest.py
 ```
+
+`flowtest.py` 和 `edgetest.py` 是独立的端到端演练脚本，在临时 SQLite 上驱动真实管线（不连 Discord、不连真实模型），逐项核对本分支的语义合约。pytest 是主测试套件；脚本作为补充覆盖边界场景。
 
 测试覆盖认证与并发防爆破、CSRF、管理员 ID、配置加密、数据库迁移备份和单实例锁、公开记忆隔离与全局删除屏障、并发关系更新、中文命令、连续消息合并与取消、正在输入、动态总结边界与最小留存、模型发现/测试/启用、安全规则降级、反馈和主动发言并发预算。
 
